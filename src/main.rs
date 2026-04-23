@@ -170,7 +170,7 @@ fn find_node(root: &Link, value: i32, version: u32) -> Option<Rc<Node>> {
 }
 
 // TODO: Fazer retornar Option<Rc<Node>> para atualizar estrutura de dados das raizes.
-fn insert(root: &Rc<Node>, value: i32, version: u32) {
+fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
     if let Some(parent) = find_parent_for_insertion(&Some(root.clone()), value, version, None) {
         let parent_value = parent.get_value(version);
 
@@ -184,11 +184,13 @@ fn insert(root: &Rc<Node>, value: i32, version: u32) {
 
         if value <= parent_value {
             *new_node.parent.borrow_mut() = Some((Rc::downgrade(&parent), Side::Left));
-            parent.update(ModKind::Left(Some(new_node)), version);
+            parent.update(ModKind::Left(Some(new_node)), version)
         } else {
             *new_node.parent.borrow_mut() = Some((Rc::downgrade(&parent), Side::Right));
-            parent.update(ModKind::Right(Some(new_node)), version);
+            parent.update(ModKind::Right(Some(new_node)), version)
         }
+    } else {
+        None
     }
 }
 
