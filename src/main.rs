@@ -69,7 +69,7 @@ impl Node {
         self.value
     }
 
-    pub fn update(self: &Rc<Self>, kind: ModKind, version: u32) -> Option<Rc<Node>> {
+    fn update(self: &Rc<Self>, kind: ModKind, version: u32) -> Option<Rc<Node>> {
         let mut mods = self.mods.borrow_mut();
 
         // Caso 1: Há espaço em MODS
@@ -208,43 +208,95 @@ fn print_tree(root: &Link, version: u32, depth: usize) {
 
 struct PersistentStructure {
     roots: HashMap<u32, Rc<Node>>,
+    current_version: u32,
 }
 
 impl PersistentStructure {
-    fn insert(self: Self, value: i32) {
-        todo!()
+    fn insert(&mut self, value: i32) {
+        let current_version = self.current_version;
+
+        if self.current_version == 0 {
+            let root = Rc::new(Node {
+                value: value,
+                left: None,
+                right: None,
+                parent: RefCell::new(None),
+                mods: RefCell::new(vec![]),
+            });
+            self.roots.insert(current_version, root);
+        }
+
+        let new_version = current_version + 1;
+
+        let root_copy = self
+            .roots
+            .get(&current_version)
+            .cloned()
+            .expect("Erro crítico: não há raiz para a versão atual.");
+
+        match insert(&root_copy, value, new_version) {
+            Some(new_physical_root) => {
+                self.roots.insert(new_version, new_physical_root);
+            }
+            None => {
+                self.roots.insert(new_version, root_copy);
+            }
+        }
+
+        self.current_version = new_version;
     }
 
-    fn remove(self: Self, value: i32) {
-        todo!()
+    fn show_elem(&self, value: i32, version: u32) {
+        let current_version = self.current_version;
+        let root = self.roots.get(&current_version).cloned();
+
+        match find_node(&root, value, version) {
+            Some(_) => println!("Nó encontrado para valor {value} na versão {version}"),
+            None => println!("Nó NÃO encontrado para valor {value} na versão {version}"),
+        };
     }
 
-    fn show_elem(self: Self, value: i32, version: u32) {
-        todo!()
+    fn new() -> Self {
+        Self {
+            roots: HashMap::new(),
+            current_version: 0,
+        }
     }
 }
 
 fn main() {
-    // 1. Setup inicial (v0)
-    let root_v0 = Rc::new(Node {
-        value: 0,
-        left: None,
-        right: None,
-        parent: RefCell::new(None),
-        mods: RefCell::new(vec![]),
-    });
+    let mut ps = PersistentStructure::new();
 
-    root_v0.update(ModKind::Value(1), 1);
-    root_v0.update(ModKind::Value(2), 2);
-    root_v0.update(ModKind::Value(3), 3);
-    root_v0.update(ModKind::Value(4), 4);
-    root_v0.update(ModKind::Value(5), 5);
-    let new_root = root_v0.update(ModKind::Value(6), 6).unwrap();
-    print_tree(&Some(root_v0.clone()), 0, 0);
-    print_tree(&Some(root_v0.clone()), 1, 0);
-    print_tree(&Some(root_v0.clone()), 2, 0);
-    print_tree(&Some(root_v0.clone()), 3, 0);
-    print_tree(&Some(root_v0.clone()), 4, 0);
-    print_tree(&Some(root_v0.clone()), 5, 0);
-    print_tree(&Some(new_root.clone()), 6, 0);
+    println!("========================================");
+    println!("🚀 INICIANDO INSERÇÕES");
+    println!("========================================");
+
+    for i in 1..=11 {
+        ps.insert(i);
+        println!(
+            " [+] Inserido: {:2} | Versão atual: v{}",
+            i, ps.current_version
+        );
+    }
+
+    println!("\n========================================");
+    println!("🔍 BUSCA MULTI-VERSÃO");
+    println!("========================================");
+
+    // Loop externo: controla a versão que queremos olhar (da última para a primeira)
+    for v in (0..=ps.current_version).rev() {
+        println!("\n--- Lendo Árvore na Versão [v{}] ---", v);
+
+        // Loop interno: busca elementos específicos naquela versão
+        // Vou buscar de 1 a 10 para ver o que existia em cada "foto" do tempo
+        print!("Elementos encontrados: ");
+        for i in 1..=11 {
+            // Supondo que show_elem use a versão interna ou receba uma
+            // Se o seu show_elem imprime direto, ele vai aparecer aqui
+            ps.show_elem(i, v);
+        }
+        println!();
+    }
+
+    println!("========================================");
 }
