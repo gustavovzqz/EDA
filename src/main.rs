@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 type Link = Option<Rc<Node>>;
@@ -145,7 +146,7 @@ fn find_parent_for_insertion(
                 )
             }
         }
-        // Quando chegamos no None, o último nó visitado é o pai
+        // Quando chegamos no None, o último nó visitado é o paii
         None => last_parent,
     }
 }
@@ -169,7 +170,6 @@ fn find_node(root: &Link, value: i32, version: u32) -> Option<Rc<Node>> {
     }
 }
 
-// TODO: Fazer retornar Option<Rc<Node>> para atualizar estrutura de dados das raizes.
 fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
     if let Some(parent) = find_parent_for_insertion(&Some(root.clone()), value, version, None) {
         let parent_value = parent.get_value(version);
@@ -206,6 +206,24 @@ fn print_tree(root: &Link, version: u32, depth: usize) {
     }
 }
 
+struct PersistentStructure {
+    roots: HashMap<u32, Rc<Node>>,
+}
+
+impl PersistentStructure {
+    fn insert(self: Self, value: i32) {
+        todo!()
+    }
+
+    fn remove(self: Self, value: i32) {
+        todo!()
+    }
+
+    fn show_elem(self: Self, value: i32, version: u32) {
+        todo!()
+    }
+}
+
 fn main() {
     // 1. Setup inicial (v0)
     let root_v0 = Rc::new(Node {
@@ -221,12 +239,12 @@ fn main() {
     root_v0.update(ModKind::Value(3), 3);
     root_v0.update(ModKind::Value(4), 4);
     root_v0.update(ModKind::Value(5), 5);
-    root_v0.update(ModKind::Value(6), 6);
+    let new_root = root_v0.update(ModKind::Value(6), 6).unwrap();
     print_tree(&Some(root_v0.clone()), 0, 0);
     print_tree(&Some(root_v0.clone()), 1, 0);
     print_tree(&Some(root_v0.clone()), 2, 0);
     print_tree(&Some(root_v0.clone()), 3, 0);
     print_tree(&Some(root_v0.clone()), 4, 0);
     print_tree(&Some(root_v0.clone()), 5, 0);
-    print_tree(&Some(root_v0.clone()), 6, 0);
+    print_tree(&Some(new_root.clone()), 6, 0);
 }
