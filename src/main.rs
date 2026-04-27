@@ -13,8 +13,7 @@ enum Side {
 
 #[derive(Clone)]
 enum ModKind {
-    Left(Link),
-    Right(Link),
+    Position(Side, Link),
     Value(i32),
 }
 
@@ -33,11 +32,11 @@ struct Node {
 }
 
 impl Node {
-    fn get_left(self: &Rc<Self>, version: u32) -> Link {
+    fn get_left(&self, version: u32) -> Link {
         let mods = self.mods.borrow();
         for m in mods.iter().rev() {
             if m.version <= version {
-                if let ModKind::Left(ref l) = m.kind {
+                if let ModKind::Position(Side::Left, ref l) = m.kind {
                     return l.clone();
                 }
             }
@@ -45,11 +44,11 @@ impl Node {
         self.left.clone()
     }
 
-    fn get_right(self: &Rc<Self>, version: u32) -> Link {
+    fn get_right(&self, version: u32) -> Link {
         let mods = self.mods.borrow();
         for m in mods.iter().rev() {
             if m.version <= version {
-                if let ModKind::Right(ref r) = m.kind {
+                if let ModKind::Position(Side::Right, ref r) = m.kind {
                     return r.clone();
                 }
             }
@@ -57,7 +56,7 @@ impl Node {
         self.right.clone()
     }
 
-    fn get_value(self: &Rc<Self>, version: u32) -> i32 {
+    fn get_value(&self, version: u32) -> i32 {
         let mods = self.mods.borrow();
         for m in mods.iter().rev() {
             if m.version <= version {
@@ -69,7 +68,7 @@ impl Node {
         self.value
     }
 
-    fn update(self: &Rc<Self>, kind: ModKind, version: u32) -> Option<Rc<Node>> {
+    fn update(&self, kind: ModKind, version: u32) -> Option<Rc<Node>> {
         let mut mods = self.mods.borrow_mut();
 
         // Caso 1: Há espaço em MODS
@@ -87,8 +86,8 @@ impl Node {
 
         match kind {
             ModKind::Value(v) => value = v,
-            ModKind::Left(l) => left = l,
-            ModKind::Right(r) => right = r,
+            ModKind::Position(Side::Left, l) => left = l,
+            ModKind::Position(Side::Right, r) => right = r,
         }
 
         let parent_info = self.parent.borrow().clone();
@@ -106,8 +105,8 @@ impl Node {
         if let Some((parent_weak, side)) = parent_info {
             if let Some(parent_rc) = parent_weak.upgrade() {
                 let mod_to_propagate = match side {
-                    Side::Left => ModKind::Left(Some(new_node)),
-                    Side::Right => ModKind::Right(Some(new_node)),
+                    Side::Left => ModKind::Position(Side::Left, Some(new_node)),
+                    Side::Right => ModKind::Position(Side::Right, Some(new_node)),
                 };
 
                 return parent_rc.update(mod_to_propagate, version);
@@ -184,16 +183,17 @@ fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
 
         if value <= parent_value {
             *new_node.parent.borrow_mut() = Some((Rc::downgrade(&parent), Side::Left));
-            parent.update(ModKind::Left(Some(new_node)), version)
+            parent.update(ModKind::Position(Side::Left, Some(new_node)), version)
         } else {
             *new_node.parent.borrow_mut() = Some((Rc::downgrade(&parent), Side::Right));
-            parent.update(ModKind::Right(Some(new_node)), version)
+            parent.update(ModKind::Position(Side::Right, Some(new_node)), version)
         }
     } else {
         None
     }
 }
 
+#[allow(dead_code)]
 fn successor(root: &Link, value: i32, version: u32) -> Option<Rc<Node>> {
     let mut current = root.clone();
     let mut succ: Option<Rc<Node>> = None;
@@ -207,9 +207,6 @@ fn successor(root: &Link, value: i32, version: u32) -> Option<Rc<Node>> {
         } else if value > v {
             current = node.get_right(version);
         } else {
-            // achou o nó
-
-            // Caso 1: tem subárvore direita
             if let Some(mut right) = node.get_right(version) {
                 while let Some(left) = right.get_left(version) {
                     right = left;
@@ -224,50 +221,101 @@ fn successor(root: &Link, value: i32, version: u32) -> Option<Rc<Node>> {
     None
 }
 
-
-fn remove(root: &Link, value:i32, version:u32) {
-
-    let node_to_remove = find_node(&root, value, version).expect();
-
-    // Caso 1: Folha -> Parent aponta para NULL agora
-    // Caso 2: Não possui filho direito -> Pai aponta para filho esquerdo de node_to_remove
-    // Caso 3: Possui filho direito -> Pai aponta para sucessor e removemos sucessor
-    // recursivamente (Será um caso simples)
-
+fn find_min(root: &Rc<Node>, version: u32) -> Rc<Node> {
+    if let Some(left) = root.get_left(version) {
+        find_min(&left, version)
+    } else {
+        Rc::clone(root)
+    }
 }
+fn remove(node_to_remove: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
+    let left_child = node_to_remove.get_left(version);
+    let right_child = node_to_remove.get_right(version);
+    let parent_info = node_to_remove.parent.borrow().clone();
 
-fn print_tree(root: &Link, version: u32, depth: usize) {
-    match root {
-        Some(node) => {
-            print_tree(&node.get_right(version), version, depth + 1);
-            let indent = "    ".repeat(depth);
-            println!("{}{}", indent, node.get_value(version));
-            print_tree(&node.get_left(version), version, depth + 1);
+    // Se estamos removendo a raiz, precisaremos atualizar a ES das raizes
+    if parent_info.is_none() {
+        return match (left_child, right_child) {
+            (None, None) => None, // Árvore ficou vazia
+            (Some(l), None) => {
+                *l.parent.borrow_mut() = None; // O filho vira nova raiz
+                Some(l)
+            }
+            (None, Some(r)) => {
+                *r.parent.borrow_mut() = None; // O filho vira nova raiz
+                Some(r)
+            }
+            (Some(_), Some(right_node)) => {
+                let succ = find_min(&right_node, version);
+                node_to_remove.update(ModKind::Value(succ.get_value(version)), version);
+                remove(&succ, version);
+                Some(node_to_remove.clone()) // A raiz física continua a mesma, mas com novo valor
+            }
+        };
+    }
+
+    let (parent_weak, side) = parent_info.unwrap();
+
+    let parent_rc = parent_weak
+        .upgrade()
+        .expect("parent deveria sempre existir");
+
+    match (&left_child, &right_child) {
+        // Caso 1: Folha -> Parent aponta para NULL agora
+        (None, None) => parent_rc.update(ModKind::Position(side, None), version),
+        // Caso 2: Não possui filho direito -> Pai aponta para filho esquerdo de node_to_remove
+        (Some(_), None) => parent_rc.update(ModKind::Position(side, left_child), version),
+        // Caso 3: Não possui filho esquerdo -> Pai aponta para filho direito de node_to_remove
+        (None, Some(_)) => parent_rc.update(ModKind::Position(side, right_child), version),
+        // Caso 4: Possui dois filhos
+        (Some(_), Some(right_node)) => {
+            let succ = find_min(&right_node, version);
+            let val = succ.get_value(version);
+            let root_after_val_change = node_to_remove.update(ModKind::Value(val), version);
+            let root_after_succ_removal = remove(&succ, version);
+
+            root_after_succ_removal.or(root_after_val_change)
         }
-        None => {}
     }
 }
 
 struct PersistentStructure {
-    roots: HashMap<u32, Rc<Node>>,M.2 NVMe (PCIe Gen3 x4)
+    roots: HashMap<u32, Rc<Node>>,
     current_version: u32,
 }
 
+#[allow(dead_code)]
 impl PersistentStructure {
     fn insert(&mut self, value: i32) {
         let current_version = self.current_version;
+        let new_version = current_version + 1;
 
-        if self.current_version == 0 {
+        if !self.roots.contains_key(&current_version) {
             let root = Rc::new(Node {
-                value: value,
+                value,
                 left: None,
                 right: None,
                 parent: RefCell::new(None),
                 mods: RefCell::new(vec![]),
             });
-            self.roots.insert(current_version, root);
+            self.roots.insert(new_version, root);
+        } else {
+            let root_copy = self.roots.get(&current_version).cloned().unwrap();
+
+            match insert(&root_copy, value, new_version) {
+                Some(new_physical_root) => {
+                    self.roots.insert(new_version, new_physical_root);
+                }
+                None => {
+                    self.roots.insert(new_version, root_copy);
+                }
+            }
         }
 
+        self.current_version = new_version;
+    }
+    fn remove(&mut self, value: i32) {
+        let current_version = self.current_version;
         let new_version = current_version + 1;
 
         let root_copy = self
@@ -276,7 +324,12 @@ impl PersistentStructure {
             .cloned()
             .expect("Erro crítico: não há raiz para a versão atual.");
 
-        match insert(&root_copy, value, new_version) {
+        let Some(node_to_remove) = find_node(&Some(root_copy.clone()), value, current_version)
+        else {
+            panic!("eita bixo erro ó");
+        };
+
+        match remove(&node_to_remove, new_version) {
             Some(new_physical_root) => {
                 self.roots.insert(new_version, new_physical_root);
             }
@@ -288,7 +341,7 @@ impl PersistentStructure {
         self.current_version = new_version;
     }
 
-    fn show_elem(&self, value: i32, version: u32) {
+    fn search(&self, value: i32, version: u32) {
         let current_version = self.current_version;
         let root = self.roots.get(&current_version).cloned();
 
@@ -304,41 +357,84 @@ impl PersistentStructure {
             current_version: 0,
         }
     }
+
+    pub fn print(&self, version: u32) {
+        println!("--- Visualizando Árvore (Versão {}) ---", version);
+        if let Some(root) = self.roots.get(&version) {
+            Self::print_recursive(&Some(Rc::clone(root)), version, 0);
+        } else {
+            println!("Versão {} não encontrada ou árvore vazia.", version);
+        }
+        println!("---------------------------------------");
+    }
+
+    fn print_recursive(link: &Link, version: u32, depth: usize) {
+        if let Some(node) = link {
+            Self::print_recursive(&node.get_right(version), version, depth + 1);
+            let indent = "    ".repeat(depth);
+            println!("{}{}", indent, node.get_value(version));
+            Self::print_recursive(&node.get_left(version), version, depth + 1);
+        }
+    }
 }
 
+// testes gerados pelo gemini
 fn main() {
     let mut ps = PersistentStructure::new();
+    let valores = [40, 20, 60, 10, 30, 50, 70, 5, 15, 25, 35, 45, 55, 65, 75];
 
-    println!("========================================");
-    println!("🚀 INICIANDO INSERÇÕES");
-    println!("========================================");
-
-    for i in 1..=11 {
-        ps.insert(i);
-        println!(
-            " [+] Inserido: {:2} | Versão atual: v{}",
-            i, ps.current_version
-        );
+    for &val in &valores {
+        ps.insert(val);
+        println!("[v{}] Inserido: {}", ps.current_version, val);
     }
 
-    println!("\n========================================");
-    println!("🔍 BUSCA MULTI-VERSÃO");
-    println!("========================================");
+    let v_cheia = ps.current_version; // Versão com todos os itens
+    println!("\nESTADO DA ÁRVORE NA VERSÃO v{}:", v_cheia);
+    ps.print(v_cheia);
 
-    // Loop externo: controla a versão que queremos olhar (da última para a primeira)
-    for v in (0..=ps.current_version).rev() {
-        println!("\n--- Lendo Árvore na Versão [v{}] ---", v);
+    println!("\n==================================================");
+    println!("🧨 FASE 2: REMOÇÃO E TESTE DE PERSISTÊNCIA");
+    println!("==================================================");
 
-        // Loop interno: busca elementos específicos naquela versão
-        // Vou buscar de 1 a 10 para ver o que existia em cada "foto" do tempo
-        print!("Elementos encontrados: ");
-        for i in 1..=11 {
-            // Supondo que show_elem use a versão interna ou receba uma
-            // Se o seu show_elem imprime direto, ele vai aparecer aqui
-            ps.show_elem(i, v);
-        }
-        println!();
+    // Vamos remover alguns nós estratégicos (folhas e raízes internas)
+    let para_remover = [5, 40, 75, 30];
+    for &val in &para_remover {
+        println!("Removendo {}...", val);
+        ps.remove(val);
     }
 
-    println!("========================================");
+    let v_final = ps.current_version;
+
+    println!("\n✅ ÁRVORE ATUAL (v{} - Após Remoções):", v_final);
+    ps.print(v_final);
+
+    println!("\n🔍 VOLTANDO NO TEMPO (v{}):", v_cheia);
+    // O teste real: o valor 40 foi removido na v_final, mas DEVE existir na v_cheia
+    println!("Buscando valor 40 (raiz antiga) na v{}:", v_cheia);
+    ps.search(40, v_cheia);
+
+    println!("\nBuscando valor 40 na v{} (deve falhar):", v_final);
+    // Aqui usamos o search atualizado para a versão final
+    let root_final = ps.roots.get(&v_final).cloned();
+    match find_node(&root_final, 40, v_final) {
+        Some(_) => println!("❌ ERRO: O nó 40 ainda existe na v{}!", v_final),
+        None => println!(
+            "✅ SUCESSO: O nó 40 sumiu da v{} mas permanece no histórico!",
+            v_final
+        ),
+    }
+
+    println!("\n==================================================");
+    println!("📊 RESUMO DO HISTÓRICO");
+    println!("==================================================");
+    println!("Total de versões criadas: {}", ps.current_version);
+    println!(
+        "Nós na raiz da v1: {}",
+        ps.roots.get(&1).map_or(0, |n| n.get_value(1))
+    );
+    println!(
+        "Nós na raiz da v{}: {}",
+        v_final,
+        ps.roots.get(&v_final).map_or(0, |n| n.get_value(v_final))
+    );
 }
