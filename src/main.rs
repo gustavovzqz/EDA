@@ -194,6 +194,48 @@ fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
     }
 }
 
+fn successor(root: &Link, value: i32, version: u32) -> Option<Rc<Node>> {
+    let mut current = root.clone();
+    let mut succ: Option<Rc<Node>> = None;
+
+    while let Some(node) = current {
+        let v = node.get_value(version);
+
+        if value < v {
+            succ = Some(node.clone());
+            current = node.get_left(version);
+        } else if value > v {
+            current = node.get_right(version);
+        } else {
+            // achou o nó
+
+            // Caso 1: tem subárvore direita
+            if let Some(mut right) = node.get_right(version) {
+                while let Some(left) = right.get_left(version) {
+                    right = left;
+                }
+                return Some(right);
+            }
+
+            return succ;
+        }
+    }
+
+    None
+}
+
+
+fn remove(root: &Link, value:i32, version:u32) {
+
+    let node_to_remove = find_node(&root, value, version).expect();
+
+    // Caso 1: Folha -> Parent aponta para NULL agora
+    // Caso 2: Não possui filho direito -> Pai aponta para filho esquerdo de node_to_remove
+    // Caso 3: Possui filho direito -> Pai aponta para sucessor e removemos sucessor
+    // recursivamente (Será um caso simples)
+
+}
+
 fn print_tree(root: &Link, version: u32, depth: usize) {
     match root {
         Some(node) => {
@@ -207,7 +249,7 @@ fn print_tree(root: &Link, version: u32, depth: usize) {
 }
 
 struct PersistentStructure {
-    roots: HashMap<u32, Rc<Node>>,
+    roots: HashMap<u32, Rc<Node>>,M.2 NVMe (PCIe Gen3 x4)
     current_version: u32,
 }
 
