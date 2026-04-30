@@ -11,9 +11,16 @@ enum Side {
     Right,
 }
 
+#[derive(Clone, Copy)]
+enum Color {
+    Red,
+    Black,
+}
+
 #[derive(Clone)]
 enum ModKind {
     Position(Side, Link),
+    Color(Color),
     Value(i32),
 }
 
@@ -25,6 +32,7 @@ struct Mod {
 
 struct Node {
     value: i32,
+    color: Color,
     left: Link,
     right: Link,
     parent: RefCell<Option<(Weak<Node>, Side)>>,
@@ -68,12 +76,30 @@ impl Node {
         self.value
     }
 
-    fn update(&self, kind: ModKind, version: u32) -> Option<Rc<Node>> {
+    fn get_color(&self, version: u32) -> Color {
+        let mods = self.mods.borrow();
+        for m in mods.iter().rev() {
+            if m.version <= version {
+                if let ModKind::Color(v) = m.kind {
+                    return v;
+                }
+            }
+        }
+        self.color
+    }
+
+    fn update(self: &Rc<Self>, kind: ModKind, version: u32) -> Option<Rc<Node>> {
         let mut mods = self.mods.borrow_mut();
 
         // Caso 1: Há espaço em MODS
         if mods.len() < MAX_MODS_SIZE {
-            mods.push(Mod { version, kind });
+            mods.push(Mod {
+                version,
+                kind: kind.clone(),
+            });
+            if let ModKind::Position(side, Some(ref child)) = kind {
+                *child.parent.borrow_mut() = Some((Rc::downgrade(self), side));
+            }
             return None;
         }
 
@@ -83,11 +109,13 @@ impl Node {
         let mut value = self.get_value(version);
         let mut left = self.get_left(version);
         let mut right = self.get_right(version);
+        let mut color = self.get_color(version);
 
         match kind {
             ModKind::Value(v) => value = v,
             ModKind::Position(Side::Left, l) => left = l,
             ModKind::Position(Side::Right, r) => right = r,
+            ModKind::Color(c) => color = c,
         }
 
         let parent_info = self.parent.borrow().clone();
@@ -95,11 +123,20 @@ impl Node {
         // 1. Crio novo nó com informações atualizadas
         let new_node = Rc::new(Node {
             value,
-            left,
-            right,
+            left: left.clone(),
+            right: right.clone(),
+            color,
             parent: RefCell::new(parent_info.clone()),
             mods: RefCell::new(vec![]),
         });
+
+        // IMPORTANTE: Atualizar back-pointers dos filhos para apontar para o novo nó
+        if let Some(ref l) = left {
+            *l.parent.borrow_mut() = Some((Rc::downgrade(&new_node), Side::Left));
+        }
+        if let Some(ref r) = right {
+            *r.parent.borrow_mut() = Some((Rc::downgrade(&new_node), Side::Right));
+        }
 
         // 2. Atualizo recursivamente o PAI usando back pointer
         if let Some((parent_weak, side)) = parent_info {
@@ -145,7 +182,7 @@ fn find_parent_for_insertion(
                 )
             }
         }
-        // Quando chegamos no None, o último nó visitado é o paii
+        // Quando chegamos no None, o último nó visitado é o pai
         None => last_parent,
     }
 }
@@ -169,6 +206,47 @@ fn find_node(root: &Link, value: i32, version: u32) -> Option<Rc<Node>> {
     }
 }
 
+// ROTAÇÕES
+//      p             p
+//      |             |
+//      y             x
+//     / \    ->     / \
+//    x   g   <-    a   y
+//   / \               / \
+//  a   b             b   g
+
+// O problema é que eu estou fazendo múltiplas atualizações em uma mesma versão.
+// Preciso tomar cuidado para não estragar as coisas.
+fn left_rotate(x: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
+    let p_info = x.parent.borrow().clone(); // Pegamos o pai original de x
+    let y = x.get_right(version)?;
+    let b = y.get_left(version);
+
+    // 1. X agora aponta para B na direita
+    let root_after_x = x.update(ModKind::Position(Side::Right, b.clone()), version);
+
+    // 3. Y agora aponta para X na esquerda
+    let root_after_y = y.update(ModKind::Position(Side::Left, Some(x.clone())), version);
+
+    // 5. O pai original de X (vovô) agora aponta para Y
+    let root_after_p = if let Some((ref p_weak, side)) = p_info {
+        if let Some(p_rc) = p_weak.upgrade() {
+            // Atualiza o back-pointer de Y para o vovô ANTES do update
+            *y.parent.borrow_mut() = Some((Rc::downgrade(&p_rc), side));
+            p_rc.update(ModKind::Position(side, Some(y.clone())), version)
+        } else {
+            None
+        }
+    } else {
+        // Se X era a raiz, Y agora não tem pai
+        *y.parent.borrow_mut() = None;
+        Some(y.clone()) // Y vira a nova raiz física
+    };
+
+    // Retorna a "mais alta" nova raiz gerada
+    root_after_p.or(root_after_y).or(root_after_x)
+}
+
 fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
     if let Some(parent) = find_parent_for_insertion(&Some(root.clone()), value, version, None) {
         let parent_value = parent.get_value(version);
@@ -177,15 +255,14 @@ fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
             value,
             left: None,
             right: None,
+            color: Color::Red,
             parent: RefCell::new(None),
             mods: RefCell::new(vec![]),
         });
 
         if value <= parent_value {
-            *new_node.parent.borrow_mut() = Some((Rc::downgrade(&parent), Side::Left));
             parent.update(ModKind::Position(Side::Left, Some(new_node)), version)
         } else {
-            *new_node.parent.borrow_mut() = Some((Rc::downgrade(&parent), Side::Right));
             parent.update(ModKind::Position(Side::Right, Some(new_node)), version)
         }
     } else {
@@ -247,9 +324,10 @@ fn remove(node_to_remove: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
             }
             (Some(_), Some(right_node)) => {
                 let succ = find_min(&right_node, version);
-                node_to_remove.update(ModKind::Value(succ.get_value(version)), version);
-                remove(&succ, version);
-                Some(node_to_remove.clone()) // A raiz física continua a mesma, mas com novo valor
+                let root_after_update =
+                    node_to_remove.update(ModKind::Value(succ.get_value(version)), version);
+                let root_after_removal = remove(&succ, version);
+                root_after_removal.or(root_after_update)
             }
         };
     }
@@ -293,6 +371,7 @@ impl PersistentStructure {
         if !self.roots.contains_key(&current_version) {
             let root = Rc::new(Node {
                 value,
+                color: Color::Black,
                 left: None,
                 right: None,
                 parent: RefCell::new(None),
