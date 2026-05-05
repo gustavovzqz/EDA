@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 type Link = Option<Rc<Node>>;
-const MAX_MODS_SIZE: usize = 5;
+const MAX_MODS_SIZE: usize = 2;
 
 #[derive(Clone, Copy, Debug)]
 enum Side {
@@ -88,22 +88,31 @@ impl Node {
         self.color
     }
 
-    fn update(self: &Rc<Self>, kind: ModKind, version: u32) -> Option<Rc<Node>> {
+    // Retorna (RaizFinal, NoModificadoNestaChamada)
+    fn update_with_node(
+        self: &Rc<Self>,
+        kind: ModKind,
+        version: u32,
+    ) -> (Option<Rc<Node>>, Rc<Node>) {
         let mut mods = self.mods.borrow_mut();
 
-        // Caso 1: Há espaço em MODS
+        // Caso 1: Modificação in-place (Fat Node)
         if mods.len() < MAX_MODS_SIZE {
             mods.push(Mod {
                 version,
                 kind: kind.clone(),
             });
+
             if let ModKind::Position(side, Some(ref child)) = kind {
                 *child.parent.borrow_mut() = Some((Rc::downgrade(self), side));
             }
-            return None;
+
+            // Se não houve cópia, a raiz final "nova" é None (não mudou o topo)
+            // O nó modificado é o próprio self
+            return (None, Rc::clone(self));
         }
 
-        // Caso 2: Não há espaço em MODS
+        // Caso 2: Cópia do Nó (Path Copying)
         drop(mods);
 
         let mut value = self.get_value(version);
@@ -120,7 +129,6 @@ impl Node {
 
         let parent_info = self.parent.borrow().clone();
 
-        // 1. Crio novo nó com informações atualizadas
         let new_node = Rc::new(Node {
             value,
             left: left.clone(),
@@ -130,7 +138,7 @@ impl Node {
             mods: RefCell::new(vec![]),
         });
 
-        // IMPORTANTE: Atualizar back-pointers dos filhos para apontar para o novo nó
+        // Atualiza back-pointers dos filhos
         if let Some(ref l) = left {
             *l.parent.borrow_mut() = Some((Rc::downgrade(&new_node), Side::Left));
         }
@@ -138,20 +146,30 @@ impl Node {
             *r.parent.borrow_mut() = Some((Rc::downgrade(&new_node), Side::Right));
         }
 
-        // 2. Atualizo recursivamente o PAI usando back pointer
+        // Propagação Recursiva
         if let Some((parent_weak, side)) = parent_info {
             if let Some(parent_rc) = parent_weak.upgrade() {
-                let mod_to_propagate = match side {
-                    Side::Left => ModKind::Position(Side::Left, Some(new_node)),
-                    Side::Right => ModKind::Position(Side::Right, Some(new_node)),
-                };
+                let mod_to_propagate = ModKind::Position(side, Some(Rc::clone(&new_node)));
 
-                return parent_rc.update(mod_to_propagate, version);
+                // CHAMADA RECURSIVA
+                // O pai vai retornar (RaizFinal, NóPaiCopiado)
+                let (final_root, _) = parent_rc.update_with_node(mod_to_propagate, version);
+
+                // Importante: Se o pai retornar None na raiz, significa que a propagação parou nele.
+                // Mas como nós criamos um new_node, a raiz para quem chamou originalmente
+                // TEM que ser no mínimo o new_node ou o que o pai retornou.
+                let root_to_return = final_root.or(Some(Rc::clone(&new_node)));
+
+                return (root_to_return, new_node);
             }
         }
-        // 3. Caso eu não tenha pai, sou uma raiz nova.
-        // Retorno a raiz para a manutenção da ED das raízes.
-        Some(new_node)
+
+        // Se não tem pai, eu sou a raiz final e o nó modificado
+        (Some(Rc::clone(&new_node)), new_node)
+    }
+
+    fn update(self: &Rc<Self>, kind: ModKind, version: u32) -> Option<Rc<Node>> {
+        self.update_with_node(kind, version).0
     }
 }
 
@@ -217,34 +235,90 @@ fn find_node(root: &Link, value: i32, version: u32) -> Option<Rc<Node>> {
 
 // O problema é que eu estou fazendo múltiplas atualizações em uma mesma versão.
 // Preciso tomar cuidado para não estragar as coisas.
+fn right_rotate(y: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
+    let x = y.get_left(version).expect("Rotação exige filho esquerdo");
+    let b = x.get_right(version);
+
+    // 0. Capturamos quem é o dono da "vaga" onde o Y está sentado.
+    let p_info = y.parent.borrow().clone();
+
+    // 1. ALTERAR O PAI PRIMEIRO (O seu jeito)
+    // Fazemos o pai apontar para o X original.
+    // Por enquanto, o X ainda é o antigo, mas o Pai já sabe que o X é o novo mestre da área.
+    let root_p = if let Some((ref p_weak, side)) = p_info {
+        if let Some(p_rc) = p_weak.upgrade() {
+            // Se houver Path Copying aqui, root_p será a nova raiz global.
+            p_rc.update(ModKind::Position(side, Some(x.clone())), version)
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    // 3. ALTERAR O Y (O "filho" que desceu)
+    // Por fim, o Y recebe o B na esquerda.
+    *y.parent.borrow_mut() = None;
+    let (_, new_y) = y.update_with_node(ModKind::Position(Side::Left, b), version);
+
+    // 2. ALTERAR O X (O "novo pai" de Y)
+    // Agora que o Pai já aponta para o X, fazemos o X apontar para o Y na direita.
+    // O final_x é a versão definitiva (com ou sem Path Copying).
+    let (root_x, final_x) =
+        x.update_with_node(ModKind::Position(Side::Right, Some(new_y.clone())), version);
+
+    // --- O AJUSTE FINAL ---
+    // Se o Y era a raiz, o root_p foi None. Quem manda agora é o final_x.
+    if p_info.is_none() {
+        *final_x.parent.borrow_mut() = None;
+        return Some(final_x);
+    }
+
+    // Retornamos a raiz mais alta que foi gerada na cadeia de updates.
+    root_x.or(root_p)
+}
+
 fn left_rotate(x: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
-    let p_info = x.parent.borrow().clone(); // Pegamos o pai original de x
-    let y = x.get_right(version)?;
+    let y = x.get_right(version).expect("Rotação exige filho direito");
     let b = y.get_left(version);
 
-    // 1. X agora aponta para B na direita
-    let root_after_x = x.update(ModKind::Position(Side::Right, b.clone()), version);
+    // 0. Capturamos quem é o dono da "vaga" onde o Y está sentado.
+    let p_info = x.parent.borrow().clone();
 
-    // 3. Y agora aponta para X na esquerda
-    let root_after_y = y.update(ModKind::Position(Side::Left, Some(x.clone())), version);
-
-    // 5. O pai original de X (vovô) agora aponta para Y
-    let root_after_p = if let Some((ref p_weak, side)) = p_info {
+    // 1. ALTERAR O PAI PRIMEIRO (O seu jeito)
+    // Fazemos o pai apontar para o X original.
+    // Por enquanto, o X ainda é o antigo, mas o Pai já sabe que o X é o novo mestre da área.
+    let root_p = if let Some((ref p_weak, side)) = p_info {
         if let Some(p_rc) = p_weak.upgrade() {
-            // Atualiza o back-pointer de Y para o vovô ANTES do update
-            *y.parent.borrow_mut() = Some((Rc::downgrade(&p_rc), side));
+            // Se houver Path Copying aqui, root_p será a nova raiz global.
             p_rc.update(ModKind::Position(side, Some(y.clone())), version)
         } else {
             None
         }
     } else {
-        // Se X era a raiz, Y agora não tem pai
-        *y.parent.borrow_mut() = None;
-        Some(y.clone()) // Y vira a nova raiz física
+        None
     };
 
-    // Retorna a "mais alta" nova raiz gerada
-    root_after_p.or(root_after_y).or(root_after_x)
+    // 3. ALTERAR O X (O "filho" que desceu)
+    // Por fim, o Y recebe o B na esquerda.
+    *x.parent.borrow_mut() = None;
+    let (_, new_x) = x.update_with_node(ModKind::Position(Side::Right, b), version);
+
+    // 2. ALTERAR O Y (O "novo pai" de Y)
+    // Agora que o Pai já aponta para o X, fazemos o X apontar para o Y na direita.
+    // O final_x é a versão definitiva (com ou sem Path Copying).
+    let (root_y, final_y) =
+        y.update_with_node(ModKind::Position(Side::Left, Some(new_x.clone())), version);
+
+    // --- O AJUSTE FINAL ---
+    // Se o X era a raiz, o root_p foi None. Quem manda agora é o final_y.
+    if p_info.is_none() {
+        *final_y.parent.borrow_mut() = None;
+        return Some(final_y);
+    }
+
+    // Retornamos a raiz mais alta que foi gerada na cadeia de updates.
+    root_y.or(root_p)
 }
 
 fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
@@ -455,65 +529,90 @@ impl PersistentStructure {
             Self::print_recursive(&node.get_left(version), version, depth + 1);
         }
     }
+
+    fn rotate_left(&mut self, value: i32) {
+        let v_atual = self.current_version;
+        let v_nova = v_atual + 1;
+        let root_atual = self.roots.get(&v_atual).cloned();
+
+        if let Some(node) = find_node(&root_atual, value, v_atual) {
+            println!("🔄 Rotacionando {} à Esquerda...", value);
+
+            // Chama a função externa e decide qual raiz salvar
+            if let Some(nova_raiz) = left_rotate(&node, v_nova).or(root_atual) {
+                self.roots.insert(v_nova, nova_raiz);
+                self.current_version = v_nova;
+                println!("✅ Sucesso! Versão {} criada.", v_nova);
+            }
+        } else {
+            println!("❌ Nó {} não encontrado.", value);
+        }
+    }
+
+    fn rotate_right(&mut self, value: i32) {
+        let v_atual = self.current_version;
+        let v_nova = v_atual + 1;
+        let root_atual = self.roots.get(&v_atual).cloned();
+
+        if let Some(node) = find_node(&root_atual, value, v_atual) {
+            println!("🔄 Rotacionando {} à Direita...", value);
+
+            // Chama a função externa e decide qual raiz salvar
+            if let Some(nova_raiz) = right_rotate(&node, v_nova).or(root_atual) {
+                self.roots.insert(v_nova, nova_raiz);
+                self.current_version = v_nova;
+                println!("✅ Sucesso! Versão {} criada.", v_nova);
+            }
+        } else {
+            println!("❌ Nó {} não encontrado.", value);
+        }
+    }
 }
 
-// testes gerados pelo gemini
+use std::io::{self, Write};
+
 fn main() {
     let mut ps = PersistentStructure::new();
-    let valores = [40, 20, 60, 10, 30, 50, 70, 5, 15, 25, 35, 45, 55, 65, 75];
-
+    let valores = [40, 20, 60, 10, 30, 50, 70];
     for &val in &valores {
         ps.insert(val);
-        println!("[v{}] Inserido: {}", ps.current_version, val);
     }
 
-    let v_cheia = ps.current_version; // Versão com todos os itens
-    println!("\nESTADO DA ÁRVORE NA VERSÃO v{}:", v_cheia);
-    ps.print(v_cheia);
+    loop {
+        let v_atual = ps.current_version;
+        println!("\n=== MÁQUINA DO TEMPO: CONTROLE DE ROTAÇÕES ===");
+        ps.print(v_atual);
 
-    println!("\n==================================================");
-    println!("🧨 FASE 2: REMOÇÃO E TESTE DE PERSISTÊNCIA");
-    println!("==================================================");
+        println!("\nComandos: '<valor> d' (Direita), '<valor> e' (Esquerda), 'sair'");
+        print!("Digite sua manobra: ");
+        io::stdout().flush().unwrap();
 
-    // Vamos remover alguns nós estratégicos (folhas e raízes internas)
-    let para_remover = [5, 40, 75, 30];
-    for &val in &para_remover {
-        println!("Removendo {}...", val);
-        ps.remove(val);
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        let input = input.trim();
+
+        if input == "sair" {
+            break;
+        }
+
+        let partes: Vec<&str> = input.split_whitespace().collect();
+        if partes.len() < 2 {
+            println!("❌ Formato inválido!");
+            continue;
+        }
+
+        let val_alvo: i32 = match partes[0].parse() {
+            Ok(n) => n,
+            Err(_) => {
+                println!("❌ Valor inválido.");
+                continue;
+            }
+        };
+
+        match partes[1].to_lowercase().as_str() {
+            "d" => ps.rotate_right(val_alvo),
+            "e" => ps.rotate_left(val_alvo),
+            _ => println!("❌ Direção desconhecida."),
+        }
     }
-
-    let v_final = ps.current_version;
-
-    println!("\n✅ ÁRVORE ATUAL (v{} - Após Remoções):", v_final);
-    ps.print(v_final);
-
-    println!("\n🔍 VOLTANDO NO TEMPO (v{}):", v_cheia);
-    // O teste real: o valor 40 foi removido na v_final, mas DEVE existir na v_cheia
-    println!("Buscando valor 40 (raiz antiga) na v{}:", v_cheia);
-    ps.search(40, v_cheia);
-
-    println!("\nBuscando valor 40 na v{} (deve falhar):", v_final);
-    // Aqui usamos o search atualizado para a versão final
-    let root_final = ps.roots.get(&v_final).cloned();
-    match find_node(&root_final, 40, v_final) {
-        Some(_) => println!("❌ ERRO: O nó 40 ainda existe na v{}!", v_final),
-        None => println!(
-            "✅ SUCESSO: O nó 40 sumiu da v{} mas permanece no histórico!",
-            v_final
-        ),
-    }
-
-    println!("\n==================================================");
-    println!("📊 RESUMO DO HISTÓRICO");
-    println!("==================================================");
-    println!("Total de versões criadas: {}", ps.current_version);
-    println!(
-        "Nós na raiz da v1: {}",
-        ps.roots.get(&1).map_or(0, |n| n.get_value(1))
-    );
-    println!(
-        "Nós na raiz da v{}: {}",
-        v_final,
-        ps.roots.get(&v_final).map_or(0, |n| n.get_value(v_final))
-    );
 }
