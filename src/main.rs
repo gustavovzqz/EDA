@@ -324,7 +324,7 @@ fn find_min(root: &Rc<Node>, version: u32) -> Rc<Node> {
     }
 }
 
-fn print_root(root: &Option<Rc<Node>>, version: u32) {
+fn _print_root(root: &Option<Rc<Node>>, version: u32) {
     match root {
         Some(node) => {
             let color = node.get_color(version);
@@ -343,11 +343,11 @@ fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Optio
     let mut root_acc: Option<Rc<Node>> = None;
 
     // Helper para atualizar e debugar a raiz
-    let mut update_root = |new_r: Option<Rc<Node>>, debug_id: u32| {
+    let mut update_root = |new_r: Option<Rc<Node>>, _debug_id: u32| {
         if let Some(ref r) = new_r {
-            println!("[DEBUG {}] Atualizando root_acc via update_root", debug_id);
+            //println!("[DEBUG {}] Atualizando root_acc via update_root", debug_id);
             root_acc = Some(r.clone());
-            print_root(&root_acc, version);
+            //print_root(&root_acc, version);
         }
     };
 
@@ -367,7 +367,6 @@ fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Optio
 
         // --- CASO 0: PAI É RAIZ ---
         if gp_info.is_none() {
-            println!("entrei 1");
             let (new_p, r) = p.update_with_node(ModKind::Color(Color::Black), version);
             update_root(r.or(Some(new_p)), 1); // DEBUG 1
             break;
@@ -381,7 +380,6 @@ fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Optio
 
             if y.as_ref().map_or(Color::Black, |n| n.get_color(version)) == Color::Red {
                 // --- CASO 1: RECOLORAÇÃO ---
-                println!("entrei 2");
                 if let Some(uncle) = y {
                     let (_, r2) = uncle.update_with_node(ModKind::Color(Color::Black), version);
                     update_root(r2, 2); // DEBUG 2
@@ -398,7 +396,6 @@ fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Optio
                 current = new_gp;
             } else {
                 // --- CASO 2: ROTAÇÃO SIMPLES ---
-                println!("entrei 3");
                 if matches!(get_parent_info(&current), Some((_, Side::Right))) {
                     current = p.clone();
                     let (new_r, updated_node) = left_rotate(&current, version);
@@ -407,7 +404,6 @@ fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Optio
                 }
 
                 // --- CASO 3: ROTAÇÃO FINAL ---
-                println!("entrei 4");
                 let (p_f_w, _) = get_parent_info(&current).expect("Pai sumiu");
                 let p_f = p_f_w.upgrade().unwrap();
                 let (new_p, r_p) = p_f.update_with_node(ModKind::Color(Color::Black), version);
@@ -424,7 +420,6 @@ fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Optio
             }
         } else {
             // --- LÓGICA ESPELHADA (P é Side::Right) ---
-            println!("entrei 6");
             let y = gp.get_left(version);
 
             if y.as_ref().map_or(Color::Black, |n| n.get_color(version)) == Color::Red {
@@ -472,7 +467,6 @@ fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Optio
     let final_root = root_acc.clone().or(Some(current_root.clone())).unwrap();
 
     if final_root.get_color(version) == Color::Red {
-        println!("[DEBUG 16] Pintura final da raiz (Red -> Black)");
         let root_after_final_paint = final_root.update(ModKind::Color(Color::Black), version);
         // Se a pintura gerou uma nova raiz (por falta de mods), retornamos ela
         root_after_final_paint.or(root_acc)
@@ -666,13 +660,13 @@ fn rb_delete_fixup(
 ) -> Option<Rc<Node>> {
     // println!("[FIXUP] Iniciando fixup da versão {}", version);
     let mut current_x = x_init;
-    let mut current_parent_info = parent_of_none;
+    let current_parent_info = parent_of_none;
     let mut root_acc: Option<Rc<Node>> = None;
 
     macro_rules! update_root {
         ($new_r:expr, $debug_id:expr) => {
             if let Some(ref r) = $new_r {
-                println!("[DEBUG {}] Nova raiz detectada no fixup!", $debug_id);
+                //println!("[DEBUG {}] Nova raiz detectada no fixup!", $debug_id);
                 root_acc = Some(r.clone());
             }
         };
@@ -682,15 +676,13 @@ fn rb_delete_fixup(
         // Print de estado a cada iteração
         if let Some(ref node) = current_x {
             let color = node.get_color(version);
-            println!("[FIXUP] Iteração: x = {}, Cor = {:?}", node.value, color);
+            // println!("[FIXUP] Iteração: x = {}, Cor = {:?}", node.value, color);
 
             // Condição de parada: se x é Vermelho ou é a Raiz
             if color == Color::Red || node.parent.borrow().is_none() {
-                println!("[FIXUP] Parando: x é Vermelho ou Raiz.");
+                // println!("[FIXUP] Parando: x é Vermelho ou Raiz.");
                 break;
             }
-        } else {
-            println!("[FIXUP] Iteração: x é NIL (None)");
         }
 
         let (cp, side) = if let Some(ref node) = current_x {
@@ -698,19 +690,15 @@ fn rb_delete_fixup(
             (info.0.upgrade().expect("Pai ativo"), info.1)
         } else if let Some((ref p_weak, s)) = current_parent_info {
             let p = p_weak.upgrade().expect("Pai de None ativo");
-            println!("[FIXUP] x é NIL, pai é {}, lado {:?}", p.value, s);
             (p, s)
         } else {
-            println!("[FIXUP] Sem x e sem informação de pai. Saindo.");
             break;
         };
 
         if side == Side::Left {
-            println!("[FIXUP] Caso: x está à ESQUERDA do pai {}", cp.value);
             let mut w = cp.get_right(version).expect("Irmão deve existir");
 
             if w.get_color(version) == Color::Red {
-                println!("[Fixup L] Caso 1: Irmão Vermelho");
                 let (new_w, r1) = w.update_with_node(ModKind::Color(Color::Black), version);
                 update_root!(r1, 1);
 
@@ -734,7 +722,6 @@ fn rb_delete_fixup(
                 .map_or(Color::Black, |n| n.get_color(version));
 
             if w_l_c == Color::Black && w_r_c == Color::Black {
-                println!("[Fixup L] Caso 2: Sobrinhos Pretos");
                 let (new_w, r) = w.update_with_node(ModKind::Color(Color::Red), version);
                 update_root!(r, 4);
                 let (p_f, _) = new_w.parent.borrow().clone().unwrap();
@@ -742,7 +729,6 @@ fn rb_delete_fixup(
             //                current_parent_info = None;
             } else {
                 if w_r_c == Color::Black {
-                    println!("[Fixup L] Caso 3: Sobrinho oposto Preto");
                     if let Some(wl) = w.get_left(version) {
                         let (new_wl, r) =
                             wl.update_with_node(ModKind::Color(Color::Black), version);
@@ -793,13 +779,11 @@ fn rb_delete_fixup(
                 break;
             }
         } else {
-            println!("[FIXUP] Caso: x está à DIREITA do pai {}", cp.value);
             // O irmão (w) agora é o da ESQUERDA
             let mut w = cp.get_left(version).expect("Irmão deve existir");
 
             // Caso 1: Irmão é Vermelho
             if w.get_color(version) == Color::Red {
-                println!("[Fixup R] Caso 1: Irmão Vermelho");
                 let (new_w, r1) = w.update_with_node(ModKind::Color(Color::Black), version);
                 update_root!(r1, 12);
 
@@ -825,7 +809,6 @@ fn rb_delete_fixup(
 
             // Caso 2: Ambos os sobrinhos são pretos
             if w_l_c == Color::Black && w_r_c == Color::Black {
-                println!("[Fixup R] Caso 2: Sobrinhos Pretos");
                 let (new_w, r) = w.update_with_node(ModKind::Color(Color::Red), version);
                 update_root!(r, 15);
 
@@ -835,7 +818,6 @@ fn rb_delete_fixup(
             } else {
                 // Caso 3: Sobrinho da esquerda é preto (sobrinho oposto ao lado de x)
                 if w_l_c == Color::Black {
-                    println!("[Fixup R] Caso 3: Sobrinho oposto Preto");
                     if let Some(wr) = w.get_right(version) {
                         let (new_wl, r) =
                             wr.update_with_node(ModKind::Color(Color::Black), version);
@@ -893,10 +875,6 @@ fn rb_delete_fixup(
     }
 
     if let Some(x) = current_x {
-        println!(
-            "[FIXUP] Pintura final de segurança: x={} para PRETO",
-            x.value
-        );
         let (_, r) = x.update_with_node(ModKind::Color(Color::Black), version);
         update_root!(r.clone(), 23);
 
@@ -904,7 +882,6 @@ fn rb_delete_fixup(
         return r.or(root_acc.clone());
     }
 
-    println!("[FIXUP] Finalizado sem x final. Retornando root_acc.");
     root_acc
 }
 struct PersistentStructure {
@@ -958,13 +935,14 @@ impl PersistentStructure {
             return;
         };
 
-        // Se o nó é raiz (não tem pai) e não tem filhos na versão atual
-        let is_root = node_to_remove.parent.borrow().is_none();
+        let is_root = value == root_copy.as_ref().unwrap().get_value(current_version);
+
         let has_no_children = node_to_remove.get_left(current_version).is_none()
             && node_to_remove.get_right(current_version).is_none();
 
         if is_root && has_no_children {
             self.current_version = new_version;
+            println!("entrei aqui");
             return;
         }
 
