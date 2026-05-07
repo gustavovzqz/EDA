@@ -942,7 +942,6 @@ impl PersistentStructure {
 
         if is_root && has_no_children {
             self.current_version = new_version;
-            println!("entrei aqui");
             return;
         }
 
