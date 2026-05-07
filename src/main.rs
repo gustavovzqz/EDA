@@ -561,44 +561,61 @@ fn remove(node_to_remove: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
     let right_child = node_to_remove.get_right(version);
     let parent_info = node_to_remove.parent.borrow().clone();
 
-    if left_child.is_some() && right_child.is_some() {
-        let succ = find_min(right_child.as_ref().unwrap(), version);
-        let val = succ.get_value(version);
-        let root_after_val = node_to_remove.update(ModKind::Value(val), version);
-        let final_root = remove(&succ, version);
-        return final_root.or(root_after_val);
-    }
-
-    let x = left_child.or(right_child);
-
+    // Se estamos removendo a raiz, precisaremos atualizar a ES das raizes
     if parent_info.is_none() {
-        return if let Some(new_root) = x {
-            *new_root.parent.borrow_mut() = None;
-            let (new_, _) = new_root.update_with_node(ModKind::Color(Color::Black), version);
-            Some(new_)
-        } else {
-            None
+        return match (left_child, right_child) {
+            (None, None) => None, // Árvore ficou vazia
+            (Some(l), None) => {
+                *l.parent.borrow_mut() = None; // O filho vira nova raiz
+                // Raiz deve ser sempre preta
+                let (new_root, _) = l.update_with_node(ModKind::Color(Color::Black), version);
+                Some(new_root)
+            }
+            (None, Some(r)) => {
+                *r.parent.borrow_mut() = None; // O filho vira nova raiz
+                let (new_root, _) = r.update_with_node(ModKind::Color(Color::Black), version);
+                Some(new_root)
+            }
+            (Some(_), Some(right_node)) => {
+                let succ = find_min(&right_node, version);
+                let root_after_update =
+                    node_to_remove.update(ModKind::Value(succ.get_value(version)), version);
+                let root_after_removal = remove(&succ, version);
+                root_after_removal.or(root_after_update)
+            }
         };
     }
 
-    let (parent_weak, side) = parent_info.clone().unwrap();
+    let (parent_weak, side) = parent_info.unwrap();
+    let parent_rc = parent_weak
+        .upgrade()
+        .expect("parent deveria sempre existir");
 
-    let parent_rc = parent_weak.upgrade().expect("Pai deve existir");
+    match (&left_child, &right_child) {
+        // Caso 1, 2 e 3: Remoção física do nó
+        (None, None) | (Some(_), None) | (None, Some(_)) => {
+            let x = left_child.or(right_child);
+            let root_after_pos = parent_rc.update(ModKind::Position(side, x.clone()), version);
 
-    let (_, root_after_pos) =
-        parent_rc.update_with_node(ModKind::Position(side, x.clone()), version);
+            if color_removed == Color::Black {
+                // Se o nó removido era preto, precisamos do fixup para manter a altura negra
+                let fixup_root = rb_delete_fixup(x, version, Some((parent_weak, side)));
+                fixup_root.or(root_after_pos)
+            } else {
+                root_after_pos
+            }
+        }
+        // Caso 4: Possui dois filhos
+        (Some(_), Some(right_node)) => {
+            let succ = find_min(&right_node, version);
+            let val = succ.get_value(version);
+            let root_after_val_change = node_to_remove.update(ModKind::Value(val), version);
+            let root_after_succ_removal = remove(&succ, version);
 
-    if color_removed == Color::Black {
-        // Agora passamos o parent_info para o fixup saber onde o 'None' está pendurado
-
-        return rb_delete_fixup(x, version, Some(parent_info.unwrap())).or(root_after_pos);
+            root_after_succ_removal.or(root_after_val_change)
+        }
     }
-
-    root_after_pos
 }
-
-// --- FIXUP ATUALIZADO PARA LIDAR COM NONE ---
-
 fn rb_delete_fixup(
     x_init: Option<Rc<Node>>,
 
@@ -922,23 +939,40 @@ impl PersistentStructure {
     }
 
     fn remove(&mut self, value: i32) {
-        let old_v = self.current_version;
+        let current_version = self.current_version;
+        let new_version = current_version + 1;
 
-        let new_v = old_v + 1;
+        let root_copy = self
+            .roots
+            .get(&current_version)
+            .cloned()
+            .expect("Erro crítico: não há raiz para a versão atual.");
 
-        if let Some(root) = self.roots.get(&old_v).cloned() {
-            if let Some(node) = find_node(&Some(root.clone()), value, old_v) {
-                if let Some(new_root) = remove(&node, new_v) {
-                    self.roots.insert(new_v, new_root);
-                }
-            } else {
-                self.roots.insert(new_v, root);
+        let Some(node_to_remove) = find_node(&Some(root_copy.clone()), value, current_version)
+        else {
+            panic!("NAO HA NO PARA REMOVER");
+        };
+
+        // Se o nó é raiz (não tem pai) e não tem filhos na versão atual
+        let is_root = node_to_remove.parent.borrow().is_none();
+        let has_no_children = node_to_remove.get_left(current_version).is_none()
+            && node_to_remove.get_right(current_version).is_none();
+
+        if is_root && has_no_children {
+            return;
+        }
+
+        match remove(&node_to_remove, new_version) {
+            Some(new_physical_root) => {
+                self.roots.insert(new_version, new_physical_root);
+            }
+            None => {
+                self.roots.insert(new_version, root_copy);
             }
         }
 
-        self.current_version = new_v;
+        self.current_version = new_version;
     }
-
     fn print(&self, version: u32) {
         println!("--- Visualizando Versão {} ---", version);
 
@@ -1074,58 +1108,58 @@ fn validate_node(
         && validate_node(&right, version, next_black_count, expected_black_height)
 }
 
-use rand::seq::SliceRandom; // Para embaralhar os números
-use rand::thread_rng;
-use std::time::Instant;
+use std::io::{self, Write};
 
 fn main() {
     let mut ps = PersistentStructure::new();
-    let n = 100000;
 
-    // 1. Criar permutação aleatória
-    let mut data: Vec<i32> = (1..=n as i32).collect();
-    let mut rng = thread_rng();
-    data.shuffle(&mut rng);
+    println!("=== RBT PERSISTENTE: CLI v2.0 ===");
+    println!("Comandos: <num>, r <num>, v <num>, sair");
 
-    println!("=== INICIANDO TESTE MASSIVO DE 100.000 INSERÇÕES ===");
-    let start_time = Instant::now();
+    loop {
+        print!("\nComando >> ");
+        io::stdout().flush().unwrap();
 
-    for (i, &val) in data.iter().enumerate() {
-        ps.insert(val);
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).unwrap();
+        let input = input.trim();
 
-        let v = ps.current_version;
+        if input == "sair" {
+            break;
+        }
 
-        // 2. Verificar integridade da RBT a cada passo
-        // Pegamos a raiz da versão atual e validamos
-        if let Some(root) = ps.roots.get(&v) {
-            // check_rbt deve retornar um booleano ou dar panic em caso de erro
-            // Aqui assumimos que sua função check_rbt faz o trabalho silenciosamente
-            if !is_valid_rbt(&Some(root.clone()), v) {
-                println!("❌ FALHA NA VERSÃO {}: Inserção de {}", v, val);
-                // Opcional: ps.print(v) para ver o estado do erro se não for gigante
-                panic!("Propriedades da RBT violadas!");
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        if parts.is_empty() {
+            continue;
+        }
+
+        match parts[0] {
+            "v" => {
+                if let Ok(v) = parts[1].parse::<u32>() {
+                    ps.print(v);
+                    if let Some(root) = ps.roots.get(&v) {
+                        check_rbt(&Some(root.clone()), v);
+                    }
+                }
+            }
+            "r" => {
+                if let Ok(val) = parts[1].parse::<i32>() {
+                    println!("Removendo {}...", val);
+                    ps.remove(val);
+                    let v = ps.current_version;
+                    ps.print(v);
+                    check_rbt(&Some(ps.roots.get(&v).unwrap().clone()), v);
+                }
+            }
+            _ => {
+                if let Ok(val) = parts[0].parse::<i32>() {
+                    println!("Inserindo {}...", val);
+                    ps.insert(val);
+                    let v = ps.current_version;
+                    ps.print(v);
+                    check_rbt(&Some(ps.roots.get(&v).unwrap().clone()), v);
+                }
             }
         }
-
-        // Feedback de progresso a cada 10.000
-        if (i + 1) % 10_000 == 0 {
-            println!("Progresso: {} nós inseridos e validados...", i + 1);
-        }
     }
-
-    let duration = start_time.elapsed();
-    println!("--- TESTE CONCLUÍDO COM SUCESSO ---");
-    println!("Tempo total: {:.2?}", duration);
-    println!("Total de versões validadas: {}", ps.current_version);
-}
-
-// Função auxiliar silenciosa para o teste massivo
-fn is_valid_rbt(root: &Option<Rc<Node>>, version: u32) -> bool {
-    // Implemente uma versão de check_rbt que apenas retorna bool
-    // sem dar print na árvore inteira.
-    // Verificações:
-    // 1. Raiz é negra?
-    // 2. Vermelho tem filho vermelho?
-    // 3. Altura negra é consistente em todos os caminhos?
-    true // placeholder: conecte sua lógica de validação aqui
 }
