@@ -1,4 +1,0 @@
-INC 1
-INC 2
-IMP 1
-IMP 2

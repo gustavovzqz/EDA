@@ -1,2 +1,0 @@
-rustc src/main.rs -o programa.exe
-make: Nothing to be done for 'entrada.txt'.
