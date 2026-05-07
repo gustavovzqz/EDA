@@ -11,7 +11,7 @@ enum Side {
     Right,
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Debug, Copy, PartialEq)]
 enum Color {
     Red,
     Black,
@@ -324,10 +324,33 @@ fn find_min(root: &Rc<Node>, version: u32) -> Rc<Node> {
     }
 }
 
+fn print_root(root: &Option<Rc<Node>>, version: u32) {
+    match root {
+        Some(node) => {
+            let color = node.get_color(version);
+            println!(
+                "[ROOT] Valor: {}, Cor: {:?}",
+                node.get_value(version),
+                color
+            );
+        }
+        None => println!("[ROOT] A árvore está vazia (None)"),
+    }
+}
+
 fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Option<Rc<Node>> {
     let mut current = z.clone();
-
     let mut root_acc: Option<Rc<Node>> = None;
+
+    // Helper para atualizar e debugar a raiz
+    let mut update_root = |new_r: Option<Rc<Node>>, debug_id: u32| {
+        if let Some(ref r) = new_r {
+            println!("[DEBUG {}] Atualizando root_acc via update_root", debug_id);
+            root_acc = Some(r.clone());
+            print_root(&root_acc, version);
+        }
+    };
+
     let get_parent_info = |node: &Rc<Node>| node.parent.borrow().clone();
 
     while let Some((p_weak, _)) = get_parent_info(&current) {
@@ -339,173 +362,124 @@ fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Optio
         if p.get_color(version) == Color::Black {
             break;
         }
-        // --- SUBSTITUA DAQUI ---
+
         let gp_info = get_parent_info(&p);
 
-        // Se o pai é vermelho mas não tem avô, ele é tecnicamente a raiz.
-        // Em uma RBT, a raiz deve ser preta.
+        // --- CASO 0: PAI É RAIZ ---
         if gp_info.is_none() {
+            println!("entrei 1");
             let (new_p, r) = p.update_with_node(ModKind::Color(Color::Black), version);
-            root_acc = r.or(Some(new_p));
+            update_root(r.or(Some(new_p)), 1); // DEBUG 1
             break;
         }
 
         let (gp_weak, side_p_to_gp) = gp_info.unwrap();
-        let gp = match gp_weak.upgrade() {
-            Some(node) => node,
-            None => break,
-        };
+        let gp = gp_weak.upgrade().expect("Avô deve estar vivo");
+
         if side_p_to_gp == Side::Left {
             let y = gp.get_right(version);
 
             if y.as_ref().map_or(Color::Black, |n| n.get_color(version)) == Color::Red {
                 // --- CASO 1: RECOLORAÇÃO ---
-
-                // Tio primeiro
-
+                println!("entrei 2");
                 if let Some(uncle) = y {
                     let (_, r2) = uncle.update_with_node(ModKind::Color(Color::Black), version);
-
-                    root_acc = r2.or(root_acc);
+                    update_root(r2, 2); // DEBUG 2
                 }
 
-                // Pai por último (Bússola)
-
                 let (new_p, r1) = p.update_with_node(ModKind::Color(Color::Black), version);
-
-                root_acc = r1.or(root_acc);
+                update_root(r1, 3); // DEBUG 3
 
                 let (gp_fresh_w, _) = get_parent_info(&new_p).expect("Avô deve existir");
-
-                let gp_fresh = gp_fresh_w.upgrade().expect("Avô deve estar vivo");
-
+                let gp_fresh = gp_fresh_w.upgrade().unwrap();
                 let (new_gp, r3) = gp_fresh.update_with_node(ModKind::Color(Color::Red), version);
-
-                root_acc = r3.or(root_acc);
+                update_root(r3, 4); // DEBUG 4
 
                 current = new_gp;
             } else {
                 // --- CASO 2: ROTAÇÃO SIMPLES ---
-
+                println!("entrei 3");
                 if matches!(get_parent_info(&current), Some((_, Side::Right))) {
                     current = p.clone();
-
                     let (new_r, updated_node) = left_rotate(&current, version);
-
-                    root_acc = new_r.or(root_acc);
-
+                    update_root(new_r, 5); // DEBUG 5
                     current = updated_node;
                 }
 
                 // --- CASO 3: ROTAÇÃO FINAL ---
-
+                println!("entrei 4");
                 let (p_f_w, _) = get_parent_info(&current).expect("Pai sumiu");
-
                 let p_f = p_f_w.upgrade().unwrap();
-
                 let (new_p, r_p) = p_f.update_with_node(ModKind::Color(Color::Black), version);
-
-                root_acc = r_p.or(root_acc);
+                update_root(r_p, 6); // DEBUG 6
 
                 let (gp_f_w, _) = get_parent_info(&new_p).expect("Avô sumiu");
-
                 let gp_f = gp_f_w.upgrade().unwrap();
-
                 let (gp_red, r_gp) = gp_f.update_with_node(ModKind::Color(Color::Red), version);
-
-                root_acc = r_gp.or(root_acc);
+                update_root(r_gp, 7); // DEBUG 7
 
                 let (new_r, _) = right_rotate(&gp_red, version);
-
-                root_acc = new_r.or(root_acc);
-
+                update_root(new_r, 8); // DEBUG 8
                 break;
             }
         } else {
             // --- LÓGICA ESPELHADA (P é Side::Right) ---
-
+            println!("entrei 6");
             let y = gp.get_left(version);
 
             if y.as_ref().map_or(Color::Black, |n| n.get_color(version)) == Color::Red {
-                // --- CASO 1 ESPELHADO: RECOLORAÇÃO ---
-
-                // 1. Tio primeiro
-
+                // --- CASO 1 ESPELHADO ---
                 if let Some(uncle) = y {
                     let (_, r2) = uncle.update_with_node(ModKind::Color(Color::Black), version);
-
-                    root_acc = r2.or(root_acc);
+                    update_root(r2, 9); // DEBUG 9
                 }
-
-                // 2. Pai por último (Bússola)
-
                 let (new_p, r1) = p.update_with_node(ModKind::Color(Color::Black), version);
-
-                root_acc = r1.or(root_acc);
-
-                // 3. Re-ancoragem do Avô via Pai novo
+                update_root(r1, 10); // DEBUG 10
 
                 let (gp_f_w, _) = get_parent_info(&new_p).expect("Avô deve existir");
-
-                let gp_f = gp_f_w.upgrade().expect("Avô deve estar vivo");
-
-                // 4. Avô fica Red e subimos
-
+                let gp_f = gp_f_w.upgrade().unwrap();
                 let (new_gp, r3) = gp_f.update_with_node(ModKind::Color(Color::Red), version);
-
-                root_acc = r3.or(root_acc);
-
+                update_root(r3, 11); // DEBUG 11
                 current = new_gp;
             } else {
                 // --- CASO 2 ESPELHADO ---
-
                 if matches!(get_parent_info(&current), Some((_, Side::Left))) {
                     current = p.clone();
-
                     let (new_r, updated_node) = right_rotate(&current, version);
-
-                    root_acc = new_r.or(root_acc);
-
+                    update_root(new_r, 12); // DEBUG 12
                     current = updated_node;
                 }
 
                 // --- CASO 3 ESPELHADO ---
-
                 let (p_f_w, _) = get_parent_info(&current).expect("Pai sumiu");
-
-                let p_f = p_f_w.upgrade().expect("Pai deve estar vivo");
-
+                let p_f = p_f_w.upgrade().unwrap();
                 let (new_p, r_p) = p_f.update_with_node(ModKind::Color(Color::Black), version);
-
-                root_acc = r_p.or(root_acc);
+                update_root(r_p, 13); // DEBUG 13
 
                 let (gp_f_w, _) = get_parent_info(&new_p).expect("Avô sumiu");
-
-                let gp_f = gp_f_w.upgrade().expect("Avô deve estar vivo");
-
+                let gp_f = gp_f_w.upgrade().unwrap();
                 let (gp_red, r_gp) = gp_f.update_with_node(ModKind::Color(Color::Red), version);
-
-                root_acc = r_gp.or(root_acc);
+                update_root(r_gp, 14); // DEBUG 14
 
                 let (new_r, _) = left_rotate(&gp_red, version);
-
-                root_acc = new_r.or(root_acc);
-
+                update_root(new_r, 15); // DEBUG 15
                 break;
             }
         }
     }
 
-    let final_root = root_acc.clone().or(Some(current_root.clone()));
-    let root_unwraped = final_root.unwrap();
+    // --- FINALIZAÇÃO ---
+    let final_root = root_acc.clone().or(Some(current_root.clone())).unwrap();
 
-    if root_unwraped.get_color(version) == Color::Red {
-        root_unwraped.update(ModKind::Color(Color::Black), version)
+    if final_root.get_color(version) == Color::Red {
+        println!("[DEBUG 16] Pintura final da raiz (Red -> Black)");
+        let root_after_final_paint = final_root.update(ModKind::Color(Color::Black), version);
+        // Se a pintura gerou uma nova raiz (por falta de mods), retornamos ela
+        root_after_final_paint.or(root_acc)
     } else {
         root_acc
     }
 }
-
 fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
     // 1. Localiza o pai para a inserção
 
@@ -597,8 +571,42 @@ fn remove(node_to_remove: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
             let x = left_child.or(right_child);
             let root_after_pos = parent_rc.update(ModKind::Position(side, x.clone()), version);
 
+            println!("ENTREI AQUI");
+
+            // --- PRINT DO PAI DE X ---
+            match &x {
+                Some(node) => {
+                    let p_info = node.parent.borrow();
+                    if let Some((ref weak_p, s)) = *p_info {
+                        if let Some(p_rc) = weak_p.upgrade() {
+                            println!(
+                                "[DEBUG REMOVE] x: {}, Pai: {} ({:?})",
+                                node.get_value(version),
+                                p_rc.get_value(version),
+                                s
+                            );
+                        } else {
+                            println!(
+                                "[DEBUG REMOVE] x: {}, Pai: MORREU (Weak falhou)",
+                                node.get_value(version)
+                            );
+                        }
+                    } else {
+                        println!("[DEBUG REMOVE] x: {}, Pai: NULO", node.get_value(version));
+                    }
+                }
+                None => {
+                    // Quando x é NIL, o pai dele é o próprio parent_rc que recebeu o update
+                    println!(
+                        "[DEBUG REMOVE] x: NIL, Pai esperado: {} ({:?})",
+                        parent_rc.get_value(version),
+                        side
+                    );
+                }
+            }
+            // -------------------------
+
             if color_removed == Color::Black {
-                // Se o nó removido era preto, precisamos do fixup para manter a altura negra
                 let fixup_root = rb_delete_fixup(x, version, Some((parent_weak, side)));
                 fixup_root.or(root_after_pos)
             } else {
@@ -616,103 +624,99 @@ fn remove(node_to_remove: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
         }
     }
 }
+
 fn rb_delete_fixup(
     x_init: Option<Rc<Node>>,
-
     version: u32,
-
     parent_of_none: Option<(Weak<Node>, Side)>,
 ) -> Option<Rc<Node>> {
+    // println!("[FIXUP] Iniciando fixup da versão {}", version);
     let mut current_x = x_init;
     let mut current_parent_info = parent_of_none;
     let mut root_acc: Option<Rc<Node>> = None;
 
+    macro_rules! update_root {
+        ($new_r:expr, $debug_id:expr) => {
+            if let Some(ref r) = $new_r {
+                println!("[DEBUG {}] Nova raiz detectada no fixup!", $debug_id);
+                root_acc = Some(r.clone());
+            }
+        };
+    }
+
     loop {
-        // Determina quem é o pai e o lado atual
+        // Print de estado a cada iteração
+        if let Some(ref node) = current_x {
+            let color = node.get_color(version);
+            println!("[FIXUP] Iteração: x = {}, Cor = {:?}", node.value, color);
 
-        let (cp, side) = if let Some(ref node) = current_x {
-            // Se x existe, verificamos se ele é Vermelho ou Raiz (fim do fixup)
-
-            if node.get_color(version) == Color::Red || node.parent.borrow().is_none() {
+            // Condição de parada: se x é Vermelho ou é a Raiz
+            if color == Color::Red || node.parent.borrow().is_none() {
+                println!("[FIXUP] Parando: x é Vermelho ou Raiz.");
                 break;
             }
+        } else {
+            println!("[FIXUP] Iteração: x é NIL (None)");
+        }
 
+        let (cp, side) = if let Some(ref node) = current_x {
             let info = node.parent.borrow().clone().expect("x deve ter pai");
-
             (info.0.upgrade().expect("Pai ativo"), info.1)
         } else if let Some((ref p_weak, s)) = current_parent_info {
-            // Se x é None, usamos a informação do pai guardada
-
-            (p_weak.upgrade().expect("Pai de None ativo"), s)
+            let p = p_weak.upgrade().expect("Pai de None ativo");
+            println!("[FIXUP] x é NIL, pai é {}, lado {:?}", p.value, s);
+            (p, s)
         } else {
+            println!("[FIXUP] Sem x e sem informação de pai. Saindo.");
             break;
         };
 
         if side == Side::Left {
+            println!("[FIXUP] Caso: x está à ESQUERDA do pai {}", cp.value);
             let mut w = cp.get_right(version).expect("Irmão deve existir");
 
             if w.get_color(version) == Color::Red {
-                println!("[Fixup L] Entrei no Caso 1: Irmão Vermelho");
-
+                println!("[Fixup L] Caso 1: Irmão Vermelho");
                 let (new_w, r1) = w.update_with_node(ModKind::Color(Color::Black), version);
-
-                root_acc = r1.or(root_acc);
+                update_root!(r1, 1);
 
                 let (p_f, _) = new_w.parent.borrow().clone().unwrap();
-
                 let (new_p, r2) = p_f
                     .upgrade()
                     .unwrap()
                     .update_with_node(ModKind::Color(Color::Red), version);
-
-                root_acc = r2.or(root_acc);
+                update_root!(r2, 2);
 
                 let (new_root, new_p_post) = left_rotate(&new_p, version);
-
-                root_acc = new_root.or(root_acc);
-
+                update_root!(new_root, 3);
                 w = new_p_post.get_right(version).expect("Novo irmão");
             }
 
             let w_l_c = w
                 .get_left(version)
                 .map_or(Color::Black, |n| n.get_color(version));
-
             let w_r_c = w
                 .get_right(version)
                 .map_or(Color::Black, |n| n.get_color(version));
 
             if w_l_c == Color::Black && w_r_c == Color::Black {
-                println!("[Fixup L] Entrei no Caso 2: Sobrinhos Pretos (W fica vermelho)");
-
+                println!("[Fixup L] Caso 2: Sobrinhos Pretos");
                 let (new_w, r) = w.update_with_node(ModKind::Color(Color::Red), version);
-
-                root_acc = r.or(root_acc);
-
+                update_root!(r, 4);
                 let (p_f, _) = new_w.parent.borrow().clone().unwrap();
-
-                let parent_node = p_f.upgrade().unwrap();
-
-                current_x = Some(parent_node.clone());
-
-                current_parent_info = None; // Agora x existe, não precisamos mais do backup
+                current_x = Some(p_f.upgrade().unwrap());
+                current_parent_info = None;
             } else {
                 if w_r_c == Color::Black {
-                    println!("[Fixup L] Entrei no Caso 3: Sobrinho oposto é Preto");
-
+                    println!("[Fixup L] Caso 3: Sobrinho oposto Preto");
                     if let Some(wl) = w.get_left(version) {
-                        let (new_wl, r) =
-                            wl.update_with_node(ModKind::Color(Color::Black), version);
-                        root_acc = r.or(root_acc);
-                        w = new_wl.parent.borrow().clone().unwrap().0.upgrade().unwrap();
+                        let (_, r) = wl.update_with_node(ModKind::Color(Color::Black), version);
+                        update_root!(r, 5);
                     }
-
                     let (new_w, r) = w.update_with_node(ModKind::Color(Color::Red), version);
-                    root_acc = r.or(root_acc);
-
+                    update_root!(r, 6);
                     let (new_root, node_below) = right_rotate(&new_w, version);
-                    root_acc = new_root.or(root_acc);
-
+                    update_root!(new_root, 7);
                     w = node_below
                         .parent
                         .borrow()
@@ -723,8 +727,7 @@ fn rb_delete_fixup(
                         .unwrap();
                 }
 
-                println!("[Fixup L] Entrei no Caso 4: Rotação Final");
-
+                println!("[Fixup L] Caso 4: Rotação Final");
                 let p_actual = if let Some(ref node) = current_x {
                     node.parent.borrow().clone().unwrap().0.upgrade().unwrap()
                 } else {
@@ -732,106 +735,83 @@ fn rb_delete_fixup(
                 };
 
                 let p_color = p_actual.get_color(version);
-
                 let (new_w, r1) = w.update_with_node(ModKind::Color(p_color), version);
-
-                root_acc = r1.or(root_acc);
+                update_root!(r1, 8);
 
                 let mut final_w = new_w;
-
                 if let Some(wr) = final_w.get_right(version) {
                     let (new_wr, r3) = wr.update_with_node(ModKind::Color(Color::Black), version);
-
-                    root_acc = r3.or(root_acc);
-
+                    update_root!(r3, 9);
                     final_w = new_wr.parent.borrow().clone().unwrap().0.upgrade().unwrap();
                 }
 
                 let (p_f_last, _) = final_w.parent.borrow().clone().unwrap();
-
                 let (new_p_final, r2) = p_f_last
                     .upgrade()
                     .unwrap()
                     .update_with_node(ModKind::Color(Color::Black), version);
-
-                root_acc = r2.or(root_acc);
+                update_root!(r2, 10);
 
                 let (new_root, _) = left_rotate(&new_p_final, version);
+                update_root!(new_root, 11);
 
-                root_acc = new_root.or(root_acc);
-
+                // IMPORTANTE: Pegamos a raiz acumulada para o encerramento
                 current_x = root_acc.clone();
-
                 break;
             }
         } else {
-            // --- LÓGICA ESPELHADA (Side::Right) ---
-
+            println!("[FIXUP] Caso: x está à DIREITA do pai {}", cp.value);
+            // O irmão (w) agora é o da ESQUERDA
             let mut w = cp.get_left(version).expect("Irmão deve existir");
 
+            // Caso 1: Irmão é Vermelho
             if w.get_color(version) == Color::Red {
-                println!("[Fixup R] Entrei no Caso 1: Irmão Vermelho");
-
+                println!("[Fixup R] Caso 1: Irmão Vermelho");
                 let (new_w, r1) = w.update_with_node(ModKind::Color(Color::Black), version);
-
-                root_acc = r1.or(root_acc);
+                update_root!(r1, 12);
 
                 let (p_f, _) = new_w.parent.borrow().clone().unwrap();
-
                 let (new_p, r2) = p_f
                     .upgrade()
-                    .unwrap()
+                    .expect("Pai deve estar vivo")
                     .update_with_node(ModKind::Color(Color::Red), version);
+                update_root!(r2, 13);
 
-                root_acc = r2.or(root_acc);
-
+                // Inverte: nó na direita -> rotação para a DIREITA
                 let (new_root, new_p_post) = right_rotate(&new_p, version);
-
-                root_acc = new_root.or(root_acc);
-
+                update_root!(new_root, 14);
                 w = new_p_post.get_left(version).expect("Novo irmão");
             }
 
             let w_l_c = w
                 .get_left(version)
                 .map_or(Color::Black, |n| n.get_color(version));
-
             let w_r_c = w
                 .get_right(version)
                 .map_or(Color::Black, |n| n.get_color(version));
 
+            // Caso 2: Ambos os sobrinhos são pretos
             if w_l_c == Color::Black && w_r_c == Color::Black {
-                println!("[Fixup R] Entrei no Caso 2: Sobrinhos Pretos (W fica vermelho)");
-
+                println!("[Fixup R] Caso 2: Sobrinhos Pretos");
                 let (new_w, r) = w.update_with_node(ModKind::Color(Color::Red), version);
-
-                root_acc = r.or(root_acc);
+                update_root!(r, 15);
 
                 let (p_f, _) = new_w.parent.borrow().clone().unwrap();
-
-                current_x = Some(p_f.upgrade().unwrap());
-
+                current_x = Some(p_f.upgrade().expect("Pai deve estar vivo"));
                 current_parent_info = None;
             } else {
+                // Caso 3: Sobrinho da esquerda é preto (sobrinho oposto ao lado de x)
                 if w_l_c == Color::Black {
-                    println!("[Fixup R] Entrei no Caso 3: Sobrinho oposto é Preto");
-
+                    println!("[Fixup R] Caso 3: Sobrinho oposto Preto");
                     if let Some(wr) = w.get_right(version) {
-                        let (new_wr, r) =
-                            wr.update_with_node(ModKind::Color(Color::Black), version);
-
-                        root_acc = r.or(root_acc);
-
-                        w = new_wr.parent.borrow().clone().unwrap().0.upgrade().unwrap();
+                        let (_, r) = wr.update_with_node(ModKind::Color(Color::Black), version);
+                        update_root!(r, 16);
                     }
-
                     let (new_w, r) = w.update_with_node(ModKind::Color(Color::Red), version);
-
-                    root_acc = r.or(root_acc);
+                    update_root!(r, 17);
 
                     let (new_root, node_below) = left_rotate(&new_w, version);
-
-                    root_acc = new_root.or(root_acc);
+                    update_root!(new_root, 18);
 
                     w = node_below
                         .parent
@@ -843,8 +823,8 @@ fn rb_delete_fixup(
                         .unwrap();
                 }
 
-                println!("[Fixup R] Entrei no Caso 4: Rotação Final");
-
+                // Caso 4: Rotação Final
+                println!("[Fixup R] Caso 4: Rotação Final");
                 let p_actual = if let Some(ref node) = current_x {
                     node.parent.borrow().clone().unwrap().0.upgrade().unwrap()
                 } else {
@@ -852,52 +832,47 @@ fn rb_delete_fixup(
                 };
 
                 let p_color = p_actual.get_color(version);
-
                 let (new_w, r1) = w.update_with_node(ModKind::Color(p_color), version);
-
-                root_acc = r1.or(root_acc);
+                update_root!(r1, 19);
 
                 let mut final_w = new_w;
-
                 if let Some(wl) = final_w.get_left(version) {
                     let (new_wl, r3) = wl.update_with_node(ModKind::Color(Color::Black), version);
-
-                    root_acc = r3.or(root_acc);
-
+                    update_root!(r3, 20);
                     final_w = new_wl.parent.borrow().clone().unwrap().0.upgrade().unwrap();
                 }
 
                 let (p_f_last, _) = final_w.parent.borrow().clone().unwrap();
-
                 let (new_p_final, r2) = p_f_last
                     .upgrade()
                     .unwrap()
                     .update_with_node(ModKind::Color(Color::Black), version);
-
-                root_acc = r2.or(root_acc);
+                update_root!(r2, 21);
 
                 let (new_root, _) = right_rotate(&new_p_final, version);
-
-                root_acc = new_root.or(root_acc);
+                update_root!(new_root, 22);
 
                 current_x = root_acc.clone();
-
                 break;
             }
         }
     }
 
     if let Some(x) = current_x {
-        println!("[Fixup] Pintura final de X para Preto.");
+        println!(
+            "[FIXUP] Pintura final de segurança: x={} para PRETO",
+            x.value
+        );
+        let (_, r) = x.update_with_node(ModKind::Color(Color::Black), version);
+        update_root!(r.clone(), 23);
 
-        let (final_x, r) = x.update_with_node(ModKind::Color(Color::Black), version);
-
-        return r.or(Some(final_x));
+        // Retorna a raiz acumulada se houver, senão o x modificado
+        return r.or(root_acc.clone());
     }
 
+    println!("[FIXUP] Finalizado sem x final. Retornando root_acc.");
     root_acc
 }
-
 struct PersistentStructure {
     roots: HashMap<u32, Rc<Node>>,
 
@@ -985,24 +960,39 @@ impl PersistentStructure {
 
     fn print_rec(link: &Link, v: u32, depth: usize) {
         if let Some(n) = link {
-            // Imprime a subárvore direita primeiro (topo do console)
-
+            // 1. Subárvore Direita (imprime primeiro para ficar visualmente correto)
             Self::print_rec(&n.get_right(v), v, depth + 1);
 
-            // Lógica de cor
-
+            // 2. Cores e Valores
             let color_code = match n.get_color(v) {
                 Color::Red => "R",
-
                 Color::Black => "B",
             };
 
-            // Imprime o valor com a cor ao lado: ex "40(B)"
+            // 3. Lógica do Pai com "NULO"
+            let parent_info = n.parent.borrow();
+            let parent_str = if let Some((ref weak_p, side)) = *parent_info {
+                if let Some(p_rc) = weak_p.upgrade() {
+                    // Tenta pegar o valor do pai na versão 'v'
+                    format!("Pai: {} ({:?})", p_rc.get_value(v), side)
+                } else {
+                    "Pai: MORREU (Ref count 0)".to_string()
+                }
+            } else {
+                "NULO".to_string() // Aqui é onde o nó se identifica como raiz/sem pai
+            };
 
-            println!("{}{}({})", "    ".repeat(depth), n.get_value(v), color_code);
+            // 4. Print formatado
+            // Exemplo: "    4(B) | Pai: 5 (Left)"
+            println!(
+                "{}{: >2}({}) | {}",
+                "    ".repeat(depth),
+                n.get_value(v),
+                color_code,
+                parent_str
+            );
 
-            // Imprime a subárvore esquerda
-
+            // 5. Subárvore Esquerda
             Self::print_rec(&n.get_left(v), v, depth + 1);
         }
     }
@@ -1108,16 +1098,71 @@ fn validate_node(
         && validate_node(&right, version, next_black_count, expected_black_height)
 }
 
-use std::io::{self, Write};
+use rand::seq::SliceRandom; // Para embaralhar os números
 
 fn main() {
     let mut ps = PersistentStructure::new();
+    let mut rng = rand::thread_rng();
 
-    println!("=== RBT PERSISTENTE: CLI v2.0 ===");
-    println!("Comandos: <num>, r <num>, v <num>, sair");
+    // 1. Configuração do Teste
+    let n = 20; // Quantidade de elementos
+    let mut valores: Vec<i32> = (1..=n).collect();
+    valores.shuffle(&mut rng); // Permutação aleatória
 
+    println!("=== INICIANDO TESTE DE ESTRESSE ALEATÓRIO ===");
+    println!("Permutação gerada: {:?}\n", valores);
+
+    // 2. Fase de Inserção
+    println!("--- FASE 1: INSERÇÃO (Total: {}) ---", n);
+    for (i, &val) in valores.iter().enumerate() {
+        let passo = i + 1;
+        print!("[{}/{}] Inserindo {}... ", passo, n, val);
+        ps.insert(val);
+
+        let v = ps.current_version;
+        let root = ps.roots.get(&v).cloned();
+
+        // Verifica se o valor está realmente lá
+        if find_node(&root, val, v).is_some() {
+            print!("✅ Presente | ");
+        } else {
+            panic!("\n❌ ERRO: {} deveria estar na árvore!", val);
+        }
+
+        // Usa a sua função check_rbt externa
+        check_rbt(&root, v);
+    }
+
+    println!("\n--- FASE 2: REMOÇÃO ALEATÓRIA (Total: {}) ---", n);
+    let mut valores_para_remover = valores.clone();
+    valores_para_remover.shuffle(&mut rng);
+
+    for (i, &val) in valores_para_remover.iter().enumerate() {
+        let passo = i + 1;
+        print!("[{}/{}] Removendo {}... ", passo, n, val);
+        ps.remove(val);
+
+        let v = ps.current_version;
+        let root = ps.roots.get(&v).cloned();
+
+        // Verifica se o valor SUMIU
+        if find_node(&root, val, v).is_none() {
+            print!("✅ Removido | ");
+        } else {
+            panic!("\n❌ ERRO: {} ainda consta na árvore após remoção!", val);
+        }
+
+        // Usa a sua função check_rbt externa
+        check_rbt(&root, v);
+    }
+
+    println!("\n=== TESTE FINALIZADO COM SUCESSO! ===");
+    println!("Total de versões geradas: {}", ps.current_version);
+
+    // 3. CLI Original para inspeção manual
+    println!("\n--- MODO MANUAL ATIVADO ---");
     loop {
-        print!("\nComando >> ");
+        print!("\nComando (v <num>, r <num>, <num>, sair) >> ");
         io::stdout().flush().unwrap();
 
         let mut input = String::new();
@@ -1127,7 +1172,6 @@ fn main() {
         if input == "sair" {
             break;
         }
-
         let parts: Vec<&str> = input.split_whitespace().collect();
         if parts.is_empty() {
             continue;
@@ -1148,7 +1192,9 @@ fn main() {
                     ps.remove(val);
                     let v = ps.current_version;
                     ps.print(v);
-                    check_rbt(&Some(ps.roots.get(&v).unwrap().clone()), v);
+                    if let Some(root) = ps.roots.get(&v) {
+                        check_rbt(&Some(root.clone()), v);
+                    }
                 }
             }
             _ => {
@@ -1157,7 +1203,9 @@ fn main() {
                     ps.insert(val);
                     let v = ps.current_version;
                     ps.print(v);
-                    check_rbt(&Some(ps.roots.get(&v).unwrap().clone()), v);
+                    if let Some(root) = ps.roots.get(&v) {
+                        check_rbt(&Some(root.clone()), v);
+                    }
                 }
             }
         }
