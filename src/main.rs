@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 type Link = Option<Rc<Node>>;
-const MAX_MODS_SIZE: usize = 5;
+const MAX_MODS_SIZE: usize = 10;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Side {
@@ -528,6 +528,7 @@ fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
 // REMOVE
 
 // --- AJUSTE NA FUNÇÃO DE REMOÇÃO ---
+//
 
 fn remove(node_to_remove: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
     let color_removed = node_to_remove.get_color(version);
@@ -535,92 +536,108 @@ fn remove(node_to_remove: &Rc<Node>, version: u32) -> Option<Rc<Node>> {
     let right_child = node_to_remove.get_right(version);
     let parent_info = node_to_remove.parent.borrow().clone();
 
-    // Se estamos removendo a raiz, precisaremos atualizar a ES das raizes
-    if parent_info.is_none() {
-        return match (left_child, right_child) {
-            (None, None) => None, // Árvore ficou vazia
-            (Some(l), None) => {
-                *l.parent.borrow_mut() = None; // O filho vira nova raiz
-                // Raiz deve ser sempre preta
-                let (new_root, _) = l.update_with_node(ModKind::Color(Color::Black), version);
-                Some(new_root)
+    if parent_info.is_some() {
+        let (parent_weak, side) = parent_info.unwrap();
+        let parent_rc = parent_weak
+            .upgrade()
+            .expect("parent deveria sempre existir");
+
+        match (&left_child, &right_child) {
+            // Caso 1, 2 e 3: Remoção física do nó (tem pai)
+            (None, None) | (Some(_), None) | (None, Some(_)) => {
+                let x = left_child.or(right_child);
+                let root_after_pos = parent_rc.update(ModKind::Position(side, x.clone()), version);
+
+                if color_removed == Color::Black {
+                    let fixup_root =
+                        rb_delete_fixup(x, version, Some((Rc::downgrade(&parent_rc), side)));
+                    fixup_root.or(root_after_pos)
+                } else {
+                    root_after_pos
+                }
             }
-            (None, Some(r)) => {
-                *r.parent.borrow_mut() = None; // O filho vira nova raiz
-                let (new_root, _) = r.update_with_node(ModKind::Color(Color::Black), version);
-                Some(new_root)
-            }
+            // Caso 4: Possui dois filhos (tem pai)
             (Some(_), Some(right_node)) => {
                 let succ = find_min(&right_node, version);
-                let root_after_update =
-                    node_to_remove.update(ModKind::Value(succ.get_value(version)), version);
-                let root_after_removal = remove(&succ, version);
-                root_after_removal.or(root_after_update)
-            }
-        };
-    }
+                let color_y = succ.get_color(version);
+                let val = succ.get_value(version);
 
-    let (parent_weak, side) = parent_info.unwrap();
-    let parent_rc = parent_weak
-        .upgrade()
-        .expect("parent deveria sempre existir");
+                let root_after_update = node_to_remove.update(ModKind::Value(val), version);
 
-    match (&left_child, &right_child) {
-        // Caso 1, 2 e 3: Remoção física do nó
-        (None, None) | (Some(_), None) | (None, Some(_)) => {
-            let x = left_child.or(right_child);
-            let root_after_pos = parent_rc.update(ModKind::Position(side, x.clone()), version);
+                let (succ_parent_rc, s_side) = succ
+                    .parent
+                    .borrow()
+                    .as_ref()
+                    .map(|(weak, side)| (weak.upgrade().expect("Pai de y sumiu"), *side))
+                    .expect("y (sucessor) deveria obrigatoriamente ter um pai");
 
-            println!("ENTREI AQUI");
+                let x = succ.get_right(version);
 
-            // --- PRINT DO PAI DE X ---
-            match &x {
-                Some(node) => {
-                    let p_info = node.parent.borrow();
-                    if let Some((ref weak_p, s)) = *p_info {
-                        if let Some(p_rc) = weak_p.upgrade() {
-                            println!(
-                                "[DEBUG REMOVE] x: {}, Pai: {} ({:?})",
-                                node.get_value(version),
-                                p_rc.get_value(version),
-                                s
-                            );
-                        } else {
-                            println!(
-                                "[DEBUG REMOVE] x: {}, Pai: MORREU (Weak falhou)",
-                                node.get_value(version)
-                            );
-                        }
-                    } else {
-                        println!("[DEBUG REMOVE] x: {}, Pai: NULO", node.get_value(version));
-                    }
+                // TRANSPLANTAR y por x
+                let root_after_removal =
+                    succ_parent_rc.update(ModKind::Position(s_side, x.clone()), version);
+
+                let final_root = root_after_removal.or(root_after_update);
+
+                if color_y == Color::Black {
+                    // O fixup começa em x, que está na posição onde o sucessor vivia
+                    let fixup_root =
+                        rb_delete_fixup(x, version, Some((Rc::downgrade(&succ_parent_rc), s_side)));
+                    fixup_root.or(final_root)
+                } else {
+                    final_root
                 }
-                None => {
-                    // Quando x é NIL, o pai dele é o próprio parent_rc que recebeu o update
-                    println!(
-                        "[DEBUG REMOVE] x: NIL, Pai esperado: {} ({:?})",
-                        parent_rc.get_value(version),
-                        side
-                    );
-                }
-            }
-            // -------------------------
-
-            if color_removed == Color::Black {
-                let fixup_root = rb_delete_fixup(x, version, Some((parent_weak, side)));
-                fixup_root.or(root_after_pos)
-            } else {
-                root_after_pos
             }
         }
-        // Caso 4: Possui dois filhos
-        (Some(_), Some(right_node)) => {
-            let succ = find_min(&right_node, version);
-            let val = succ.get_value(version);
-            let root_after_val_change = node_to_remove.update(ModKind::Value(val), version);
-            let root_after_succ_removal = remove(&succ, version);
+    } else {
+        // --- REMOÇÃO DA RAIZ (parent_info is None) ---
+        match (&left_child, &right_child) {
+            // Raiz com 0 ou 1 filho: x assume o lugar e perde o ponteiro de pai
+            (None, None) | (Some(_), None) | (None, Some(_)) => {
+                let x = left_child.or(right_child);
 
-            root_after_succ_removal.or(root_after_val_change)
+                if let Some(ref x_node) = x {
+                    *x_node.parent.borrow_mut() = None;
+
+                    if color_removed == Color::Black {
+                        // Fixup na nova raiz (pai é None)
+                        return rb_delete_fixup(Some(x_node.clone()), version, None).or(x);
+                    }
+                    return Some(x_node.clone());
+                }
+                None
+            }
+            // Raiz com 2 filhos
+            (Some(_), Some(right_node)) => {
+                let succ = find_min(&right_node, version);
+                let color_y = succ.get_color(version);
+                let val = succ.get_value(version);
+
+                // 1. A raiz ganha o valor do sucessor
+                let root_after_update = node_to_remove.update(ModKind::Value(val), version);
+
+                // 2. Remove o sucessor de onde ele estava
+                let (succ_parent_rc, s_side) = succ
+                    .parent
+                    .borrow()
+                    .as_ref()
+                    .map(|(weak, side)| (weak.upgrade().unwrap(), *side))
+                    .unwrap();
+
+                let x = succ.get_right(version);
+                let root_after_removal =
+                    succ_parent_rc.update(ModKind::Position(s_side, x.clone()), version);
+
+                let final_root = root_after_removal.or(root_after_update);
+
+                if color_y == Color::Black {
+                    let fixup_root =
+                        rb_delete_fixup(x, version, Some((Rc::downgrade(&succ_parent_rc), s_side)));
+                    fixup_root.or(final_root)
+                } else {
+                    final_root
+                }
+            }
         }
     }
 }
@@ -948,266 +965,102 @@ impl PersistentStructure {
 
         self.current_version = new_version;
     }
-    fn print(&self, version: u32) {
-        println!("--- Visualizando Versão {} ---", version);
 
-        if let Some(root) = self.roots.get(&version) {
-            Self::print_rec(&Some(root.clone()), version, 0);
-        } else {
-            println!("[Árvore Vazia]");
+    fn sucessor(&self, x: i32, version: u32) {
+        // Busca direta no HashMap conforme sua lógica
+        let root = self.roots.get(&version).cloned();
+
+        let mut best: Option<i32> = None;
+        let mut curr = root;
+
+        while let Some(node) = curr {
+            if node.value > x {
+                best = Some(node.value);
+                curr = node.get_left(version);
+            } else {
+                curr = node.get_right(version);
+            }
+        }
+
+        match best {
+            Some(val) => println!("{}", val),
+            None => println!("infinito"),
         }
     }
 
-    fn print_rec(link: &Link, v: u32, depth: usize) {
-        if let Some(n) = link {
-            // 1. Subárvore Direita (imprime primeiro para ficar visualmente correto)
-            Self::print_rec(&n.get_right(v), v, depth + 1);
+    fn print_imp(&self, version: u32) {
+        // Busca direta no HashMap
+        if let Some(root) = self.roots.get(&version).cloned() {
+            let mut results = Vec::new();
+            self.collect_inorder(&Some(root), version, 0, &mut results);
+            println!("{}", results.join(" "));
+        } else {
+            // Caso a versão aponte para None (árvore vazia)
+            println!("");
+        }
+    }
 
-            // 2. Cores e Valores
-            let color_code = match n.get_color(v) {
-                Color::Red => "R",
-                Color::Black => "B",
+    fn collect_inorder(&self, link: &Link, v: u32, depth: u32, acc: &mut Vec<String>) {
+        if let Some(node) = link {
+            self.collect_inorder(&node.get_left(v), v, depth + 1, acc);
+
+            let color_char = match node.get_color(v) {
+                Color::Red => 'R',
+                Color::Black => 'N',
             };
 
-            // 3. Lógica do Pai com "NULO"
-            let parent_info = n.parent.borrow();
-            let parent_str = if let Some((ref weak_p, side)) = *parent_info {
-                if let Some(p_rc) = weak_p.upgrade() {
-                    // Tenta pegar o valor do pai na versão 'v'
-                    format!("Pai: {} ({:?})", p_rc.get_value(v), side)
-                } else {
-                    "Pai: MORREU (Ref count 0)".to_string()
-                }
-            } else {
-                "NULO".to_string() // Aqui é onde o nó se identifica como raiz/sem pai
-            };
+            acc.push(format!("{},{},{}", node.value, depth, color_char));
 
-            // 4. Print formatado
-            // Exemplo: "    4(B) | Pai: 5 (Left)"
-            println!(
-                "{}{: >2}({}) | {}",
-                "    ".repeat(depth),
-                n.get_value(v),
-                color_code,
-                parent_str
-            );
-
-            // 5. Subárvore Esquerda
-            Self::print_rec(&n.get_left(v), v, depth + 1);
+            self.collect_inorder(&node.get_right(v), v, depth + 1, acc);
         }
     }
 }
 
-fn check_rbt(root: &Link, version: u32) {
-    if root.is_none() {
-        println!("✅ RBT Válida (Árvore Vazia)");
+// --- FUNÇÃO MAIN ---
+//
+use std::env;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
         return;
     }
 
-    let node = root.as_ref().unwrap();
+    let file = File::open(&args[1]).expect("Nao foi possivel abrir o arquivo");
+    let reader = BufReader::new(file);
 
-    // 1. Raiz deve ser Preta
-    if node.get_color(version) != Color::Black {
-        println!("❌ VIOLAÇÃO: Raiz não é preta!");
-    }
-
-    let mut black_height = -1;
-    let is_valid = validate_node(root, version, 0, &mut black_height);
-
-    if is_valid {
-        println!("✅ RBT Válida! (Altura Negra: {})", black_height);
-    } else {
-        println!("❌ VIOLAÇÃO: Propriedades da RBT quebradas!");
-    }
-}
-
-fn validate_node(
-    node: &Link,
-    version: u32,
-    current_black_count: i32,
-    expected_black_height: &mut i32,
-) -> bool {
-    // Se chegamos no nó folha (NULL), ele é preto
-    if node.is_none() {
-        let final_count = current_black_count + 1; // Contando o NULL como preto
-        if *expected_black_height == -1 {
-            *expected_black_height = final_count;
-            return true;
-        }
-        return final_count == *expected_black_height;
-    }
-
-    let n = node.as_ref().unwrap();
-    let color = n.get_color(version);
-    let left = n.get_left(version);
-    let right = n.get_right(version);
-
-    // Verificação de Cor: Nó Vermelho não pode ter filho Vermelho
-    if color == Color::Red {
-        if let Some(l) = &left {
-            if l.get_color(version) == Color::Red {
-                println!(
-                    "❌ VIOLAÇÃO: Nó Vermelho {} tem filho Esquerdo Vermelho!",
-                    n.get_value(version)
-                );
-                return false;
-            }
-        }
-        if let Some(r) = &right {
-            if r.get_color(version) == Color::Red {
-                println!(
-                    "❌ VIOLAÇÃO: Nó Vermelho {} tem filho Direito Vermelho!",
-                    n.get_value(version)
-                );
-                return false;
-            }
-        }
-    }
-
-    // Verificação de BST: Valor esquerda < valor atual < valor direita
-    if let Some(l) = &left {
-        if l.get_value(version) > n.get_value(version) {
-            println!(
-                "❌ VIOLAÇÃO BST: {} à esquerda de {}",
-                l.get_value(version),
-                n.get_value(version)
-            );
-            return false;
-        }
-    }
-    if let Some(r) = &right {
-        if r.get_value(version) < n.get_value(version) {
-            println!(
-                "❌ VIOLAÇÃO BST: {} à direita de {}",
-                r.get_value(version),
-                n.get_value(version)
-            );
-            return false;
-        }
-    }
-
-    // Atualiza contagem de pretos para o próximo nível
-    let next_black_count = if color == Color::Black {
-        current_black_count + 1
-    } else {
-        current_black_count
-    };
-
-    // Valida recursivamente
-    validate_node(&left, version, next_black_count, expected_black_height)
-        && validate_node(&right, version, next_black_count, expected_black_height)
-}
-
-use rand::seq::SliceRandom; // Para embaralhar os números
-
-fn main() {
     let mut ps = PersistentStructure::new();
-    let mut rng = rand::thread_rng();
 
-    // 1. Configuração do Teste
-    let n = 20; // Quantidade de elementos
-    let mut valores: Vec<i32> = (1..=n).collect();
-    valores.shuffle(&mut rng); // Permutação aleatória
-
-    println!("=== INICIANDO TESTE DE ESTRESSE ALEATÓRIO ===");
-    println!("Permutação gerada: {:?}\n", valores);
-
-    // 2. Fase de Inserção
-    println!("--- FASE 1: INSERÇÃO (Total: {}) ---", n);
-    for (i, &val) in valores.iter().enumerate() {
-        let passo = i + 1;
-        print!("[{}/{}] Inserindo {}... ", passo, n, val);
-        ps.insert(val);
-
-        let v = ps.current_version;
-        let root = ps.roots.get(&v).cloned();
-
-        // Verifica se o valor está realmente lá
-        if find_node(&root, val, v).is_some() {
-            print!("✅ Presente | ");
-        } else {
-            panic!("\n❌ ERRO: {} deveria estar na árvore!", val);
-        }
-
-        // Usa a sua função check_rbt externa
-        check_rbt(&root, v);
-    }
-
-    println!("\n--- FASE 2: REMOÇÃO ALEATÓRIA (Total: {}) ---", n);
-    let mut valores_para_remover = valores.clone();
-    valores_para_remover.shuffle(&mut rng);
-
-    for (i, &val) in valores_para_remover.iter().enumerate() {
-        let passo = i + 1;
-        print!("[{}/{}] Removendo {}... ", passo, n, val);
-        ps.remove(val);
-
-        let v = ps.current_version;
-        let root = ps.roots.get(&v).cloned();
-
-        // Verifica se o valor SUMIU
-        if find_node(&root, val, v).is_none() {
-            print!("✅ Removido | ");
-        } else {
-            panic!("\n❌ ERRO: {} ainda consta na árvore após remoção!", val);
-        }
-
-        // Usa a sua função check_rbt externa
-        check_rbt(&root, v);
-    }
-
-    println!("\n=== TESTE FINALIZADO COM SUCESSO! ===");
-    println!("Total de versões geradas: {}", ps.current_version);
-
-    // 3. CLI Original para inspeção manual
-    println!("\n--- MODO MANUAL ATIVADO ---");
-    loop {
-        print!("\nComando (v <num>, r <num>, <num>, sair) >> ");
-        io::stdout().flush().unwrap();
-
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        let input = input.trim();
-
-        if input == "sair" {
-            break;
-        }
-        let parts: Vec<&str> = input.split_whitespace().collect();
-        if parts.is_empty() {
+    for line in reader.lines() {
+        let line = line.unwrap();
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.is_empty() {
             continue;
         }
 
-        match parts[0] {
-            "v" => {
-                if let Ok(v) = parts[1].parse::<u32>() {
-                    ps.print(v);
-                    if let Some(root) = ps.roots.get(&v) {
-                        check_rbt(&Some(root.clone()), v);
-                    }
-                }
+        match tokens[0] {
+            "INC" => {
+                let val = tokens[1].parse::<i32>().unwrap();
+                ps.insert(val);
             }
-            "r" => {
-                if let Ok(val) = parts[1].parse::<i32>() {
-                    println!("Removendo {}...", val);
-                    ps.remove(val);
-                    let v = ps.current_version;
-                    ps.print(v);
-                    if let Some(root) = ps.roots.get(&v) {
-                        check_rbt(&Some(root.clone()), v);
-                    }
-                }
+            "REM" => {
+                let val = tokens[1].parse::<i32>().unwrap();
+                ps.remove(val);
             }
-            _ => {
-                if let Ok(val) = parts[0].parse::<i32>() {
-                    println!("Inserindo {}...", val);
-                    ps.insert(val);
-                    let v = ps.current_version;
-                    ps.print(v);
-                    if let Some(root) = ps.roots.get(&v) {
-                        check_rbt(&Some(root.clone()), v);
-                    }
-                }
+            "SUC" => {
+                let x = tokens[1].parse::<i32>().unwrap();
+                let v = tokens[2].parse::<u32>().unwrap();
+                println!("SUC {} {}", x, v);
+                ps.sucessor(x, v);
             }
+            "IMP" => {
+                let v = tokens[1].parse::<u32>().unwrap();
+                println!("IMP {}", v);
+                ps.print_imp(v);
+            }
+            _ => {}
         }
     }
 }
