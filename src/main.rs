@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 type Link = Option<Rc<Node>>;
-const MAX_MODS_SIZE: usize = 0;
+const MAX_MODS_SIZE: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Side {
@@ -97,34 +97,83 @@ impl Node {
         self.color
     }
 
+    fn get_field_by_side(&self, side: Side, version: u32) -> Link {
+        match side {
+            Side::Left => self.get_left(version),
+            Side::Right => self.get_right(version),
+        }
+    }
+
     fn update_with_node(
         self: &Rc<Self>,
         kind: ModKind,
         version: u32,
     ) -> (Rc<Node>, Option<Rc<Node>>) {
-        let mut mods = self.mods.borrow_mut();
+        // Função auxiliar para limpar o pai apenas se ele apontar para 'self'
+        let detach_if_parent_is_self = |child: &Rc<Node>, current_node: &Rc<Node>| {
+            let mut p_borrow = child.parent.borrow_mut();
+            let is_self = if let Some((ref w, _)) = *p_borrow {
+                w.upgrade()
+                    .map_or(false, |p_rc| Rc::ptr_eq(&p_rc, current_node))
+            } else {
+                false
+            };
 
-        if mods.len() < MAX_MODS_SIZE {
-            mods.push(Mod { version, kind });
-            return (self.clone(), None);
+            if is_self {
+                *p_borrow = None;
+            }
+        };
+
+        let old_child = if let ModKind::Position(side, _) = &kind {
+            self.get_field_by_side(*side, version)
+        } else {
+            None
+        };
+
+        {
+            let mut mods = self.mods.borrow_mut();
+            if mods.len() < MAX_MODS_SIZE {
+                if let ModKind::Position(side, ref new_child_opt) = kind {
+                    if let Some(old) = old_child {
+                        detach_if_parent_is_self(&old, self);
+                    }
+                    if let Some(new_child) = new_child_opt {
+                        *new_child.parent.borrow_mut() = Some((Rc::downgrade(self), side));
+                    }
+                }
+
+                mods.push(Mod {
+                    version,
+                    kind: kind.clone(),
+                });
+                return (self.clone(), None);
+            }
         }
 
-        drop(mods);
-
+        // --- CASO 2: NODE COPYING ---
         let mut value = self.get_value(version);
         let mut left = self.get_left(version);
         let mut right = self.get_right(version);
         let mut color = self.get_color(version);
 
         match kind {
+            ModKind::Position(Side::Left, ref l) => {
+                if let Some(ref old_l) = left {
+                    detach_if_parent_is_self(old_l, self);
+                }
+                left = l.clone();
+            }
+            ModKind::Position(Side::Right, ref r) => {
+                if let Some(ref old_r) = right {
+                    detach_if_parent_is_self(old_r, self);
+                }
+                right = r.clone();
+            }
             ModKind::Value(v) => value = v,
-            ModKind::Position(Side::Left, l) => left = l,
-            ModKind::Position(Side::Right, r) => right = r,
             ModKind::Color(c) => color = c,
         }
 
         let parent_info = self.parent.borrow().clone();
-
         let new_node = Rc::new(Node {
             value,
             color,
@@ -143,14 +192,12 @@ impl Node {
 
         if let Some((parent_weak, side)) = parent_info {
             if let Some(parent_rc) = parent_weak.upgrade() {
-                let mod_to_propagate = match side {
-                    Side::Left => ModKind::Position(Side::Left, Some(new_node.clone())),
-                    Side::Right => ModKind::Position(Side::Right, Some(new_node.clone())),
-                };
+                let mod_to_propagate = ModKind::Position(side, Some(new_node.clone()));
                 let (_, final_root) = parent_rc.update_with_node(mod_to_propagate, version);
                 return (new_node, final_root);
             }
         }
+
         (new_node.clone(), Some(new_node))
     }
     fn update(self: &Rc<Self>, kind: ModKind, version: u32) -> Option<Rc<Node>> {
@@ -162,140 +209,78 @@ impl Node {
 
 fn left_rotate(x: &Rc<Node>, version: u32) -> (Option<Rc<Node>>, Rc<Node>) {
     let y = x.get_right(version).expect("Rotação exige filho direito");
-    let a = x.get_left(version);
     let b = y.get_left(version);
-    let c = y.get_right(version);
-
-    let x_val = x.get_value(version);
-    let x_col = x.get_color(version);
-    let y_val = y.get_value(version);
-    let y_col = y.get_color(version);
-
     let mut root_acc = None;
 
-    // 1. Criamos os novos nós (NX e NY) com os dados finais
-    // NY será o filho esquerdo do novo NX
-    let (ny, r) = y.update_with_node(ModKind::Value(x_val), version);
-    root_acc = r.or(root_acc);
-    let (ny, r) = ny.update_with_node(ModKind::Color(x_col), version);
-    root_acc = r.or(root_acc);
+    // 1. Pai aponta para o Y original
+    let parent_info = x.parent.borrow().clone();
+    if let Some((p_weak, side)) = parent_info {
+        if let Some(p) = p_weak.upgrade() {
+            let (_, r_p) = p.update_with_node(ModKind::Position(side, Some(y.clone())), version);
+            root_acc = r_p.or(root_acc);
+        }
+    } else {
+        *y.parent.borrow_mut() = None;
+        root_acc = Some(y.clone());
+    }
 
-    // NX será o novo topo
-    let nx = ny
+    // 2. Y aponta para X na esquerda
+    let (_, r_y) = y.update_with_node(ModKind::Position(Side::Left, Some(x.clone())), version);
+    root_acc = r_y.or(root_acc);
+
+    // 3. X adota B na direita (Última modificação)
+    let (nx, r_x) = x.update_with_node(ModKind::Position(Side::Right, b), version);
+    root_acc = r_x.or(root_acc);
+
+    // AQUI: Usamos o back pointer de nx para pegar o Y atualizado (o novo topo)
+    let y_atualizado = nx
         .parent
         .borrow()
         .as_ref()
-        .and_then(|(p, _)| p.upgrade())
-        .unwrap();
-    let (nx, r) = nx.update_with_node(ModKind::Value(y_val), version);
-    root_acc = r.or(root_acc);
-    let (nx, r) = nx.update_with_node(ModKind::Color(y_col), version);
-    root_acc = r.or(root_acc);
+        .and_then(|(p_weak, _)| p_weak.upgrade())
+        .expect("NX agora é filho de Y, então o pai de NX deve existir");
 
-    // 2. Agora FORÇAMOS as conexões de filhos no NX e NY finais
-    let (nx, r) = nx.update_with_node(ModKind::Position(Side::Right, c.clone()), version);
-    root_acc = r.or(root_acc);
-
-    // NY_FINAL precisa ser reconstruído/atualizado para apontar para A e B
-    let (ny_final, _) = ny.update_with_node(ModKind::Position(Side::Left, a.clone()), version);
-    let (ny_final, _) =
-        ny_final.update_with_node(ModKind::Position(Side::Right, b.clone()), version);
-
-    // Reconecta NY_FINAL ao NX
-    let (nx_final, r) = nx.update_with_node(
-        ModKind::Position(Side::Left, Some(ny_final.clone())),
-        version,
-    );
-    root_acc = r.or(root_acc);
-
-    // --- A FORÇA BRUTA ---
-    // Agora garantimos que todos os Weak pointers apontem para os Rcs que acabamos de criar
-    println!("[Fix Manual Left] Forçando back-pointers...");
-
-    // NY_FINAL -> NX_FINAL
-    *ny_final.parent.borrow_mut() = Some((Rc::downgrade(&nx_final), Side::Left));
-
-    // A -> NY_FINAL
-    if let Some(ref node_a) = a {
-        *node_a.parent.borrow_mut() = Some((Rc::downgrade(&ny_final), Side::Left));
-    }
-    // B -> NY_FINAL
-    if let Some(ref node_b) = b {
-        *node_b.parent.borrow_mut() = Some((Rc::downgrade(&ny_final), Side::Right));
-    }
-    // C -> NX_FINAL
-    if let Some(ref node_c) = c {
-        *node_c.parent.borrow_mut() = Some((Rc::downgrade(&nx_final), Side::Right));
-    }
-
-    (root_acc, ny_final)
+    (root_acc, y_atualizado)
 }
 
 fn right_rotate(y: &Rc<Node>, version: u32) -> (Option<Rc<Node>>, Rc<Node>) {
+    // 0. Identificação dos alvos (leitura pura, sem modificar nada)
     let x = y.get_left(version).expect("Rotação exige filho esquerdo");
-    let a = x.get_left(version);
     let b = x.get_right(version);
-    let g = y.get_right(version);
-
-    let y_val = y.get_value(version);
-    let y_col = y.get_color(version);
-    let x_val = x.get_value(version);
-    let x_col = x.get_color(version);
-
     let mut root_acc = None;
 
-    // 1. Criamos os novos nós NX e NY
-    let (nx, r) = x.update_with_node(ModKind::Value(y_val), version);
-    root_acc = r.or(root_acc);
-    let (nx, r) = nx.update_with_node(ModKind::Color(y_col), version);
-    root_acc = r.or(root_acc);
+    // 2. AÇÃO: Atualiza o PAI primeiro
+    // Pegamos o pai do Y original e apontamos ele para o NX imediatamente.
+    let parent_info = y.parent.borrow().clone();
+    if let Some((p_weak, side)) = parent_info {
+        if let Some(p) = p_weak.upgrade() {
+            // Esta é a primeira mudança efetiva na estrutura da árvore
+            let (_, r_parent) =
+                p.update_with_node(ModKind::Position(side, Some(x.clone())), version);
+            root_acc = r_parent.or(root_acc);
+        }
+    } else {
+        // Se Y era a raiz, NX assume o trono agora
+        *x.parent.borrow_mut() = None;
+        root_acc = Some(x.clone());
+    }
 
-    let ny = nx
+    root_acc = x
+        .update(ModKind::Position(Side::Right, Some(y.clone())), version)
+        .or(root_acc);
+
+    let (ny, r_y) = y.update_with_node(ModKind::Position(Side::Left, b), version);
+
+    root_acc = r_y.or(root_acc);
+
+    let x_atualizado = ny
         .parent
         .borrow()
         .as_ref()
-        .and_then(|(p, _)| p.upgrade())
-        .unwrap();
-    let (ny, r) = ny.update_with_node(ModKind::Value(x_val), version);
-    root_acc = r.or(root_acc);
-    let (ny, r) = ny.update_with_node(ModKind::Color(x_col), version);
-    root_acc = r.or(root_acc);
+        .and_then(|(p_weak, _)| p_weak.upgrade())
+        .expect("NY deve ter um pai (o novo topo X)");
 
-    // 2. Montamos as posições finais
-    let (ny, r) = ny.update_with_node(ModKind::Position(Side::Left, a.clone()), version);
-    root_acc = r.or(root_acc);
-
-    let (nx_final, _) = nx.update_with_node(ModKind::Position(Side::Left, b.clone()), version);
-    let (nx_final, _) =
-        nx_final.update_with_node(ModKind::Position(Side::Right, g.clone()), version);
-
-    // Reconecta NX_FINAL ao NY
-    let (ny_final, r) = ny.update_with_node(
-        ModKind::Position(Side::Right, Some(nx_final.clone())),
-        version,
-    );
-    root_acc = r.or(root_acc);
-
-    // --- A FORÇA BRUTA ---
-    println!("[Fix Manual Right] Forçando back-pointers...");
-
-    // NX_FINAL -> NY_FINAL
-    *nx_final.parent.borrow_mut() = Some((Rc::downgrade(&ny_final), Side::Right));
-
-    // B -> NX_FINAL
-    if let Some(ref node_b) = b {
-        *node_b.parent.borrow_mut() = Some((Rc::downgrade(&nx_final), Side::Left));
-    }
-    // G -> NX_FINAL
-    if let Some(ref node_g) = g {
-        *node_g.parent.borrow_mut() = Some((Rc::downgrade(&nx_final), Side::Right));
-    }
-    // A -> NY_FINAL
-    if let Some(ref node_a) = a {
-        *node_a.parent.borrow_mut() = Some((Rc::downgrade(&ny_final), Side::Left));
-    }
-
-    (root_acc, nx_final)
+    (root_acc, x_atualizado)
 }
 fn find_parent_for_insertion(
     root: &Link,
@@ -354,7 +339,7 @@ fn find_min(root: &Rc<Node>, version: u32) -> Rc<Node> {
     }
 }
 
-fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Rc<Node> {
+fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Option<Rc<Node>> {
     let mut current = z.clone();
 
     let mut root_acc: Option<Rc<Node>> = None;
@@ -516,11 +501,14 @@ fn rb_insert_fixup(z: &Rc<Node>, version: u32, current_root: &Rc<Node>) -> Rc<No
         }
     }
 
-    let latest_root = root_acc.unwrap_or_else(|| current_root.clone());
+    let final_root = root_acc.clone().or(Some(current_root.clone()));
+    let root_unwraped = final_root.unwrap();
 
-    latest_root
-        .update(ModKind::Color(Color::Black), version)
-        .unwrap_or(latest_root)
+    if root_unwraped.get_color(version) == Color::Red {
+        root_unwraped.update(ModKind::Color(Color::Black), version)
+    } else {
+        root_acc
+    }
 }
 
 fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
@@ -546,25 +534,21 @@ fn insert(root: &Rc<Node>, value: i32, version: u32) -> Option<Rc<Node>> {
             Side::Right
         };
 
-        // Define o pai do novo nó
-
-        *new_node.parent.borrow_mut() = Some((Rc::downgrade(&parent), side));
-
         // 3. Conecta o novo nó ao pai e captura a possível nova raiz intermediária
 
         // Se update retornar None, a raiz continua sendo a 'root' original
 
-        let root_after_insertion = parent
-            .update(ModKind::Position(side, Some(new_node.clone())), version)
-            .unwrap_or_else(|| root.clone());
+        let final_root = parent.update(ModKind::Position(side, Some(new_node.clone())), version);
+
+        let final_root_unwraped = final_root.clone().unwrap_or_else(|| root.clone());
 
         // 4. Executa o balanceamento (Fixup)
 
         // O fixup agora recebe o nó novo, a versão e a raiz atualizada
 
-        let final_root = rb_insert_fixup(&new_node, version, &root_after_insertion);
+        let root_fixup = rb_insert_fixup(&new_node, version, &final_root_unwraped);
 
-        Some(final_root)
+        root_fixup.or(final_root)
     } else {
         // Se não encontrou pai, a árvore estava vazia (tratado no PersistentStructure)
 
